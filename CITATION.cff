@@ -18,9 +18,13 @@ authors:
     affiliation: "Jitter Ingeniería SAS / Universidad Central"
     country: CO
 version: "0.2.0"
-date-released: "2026-09-11"
+date-released: "2026-09-13"
 license: Apache-2.0
 repository-code: "https://github.com/nvasquezc/urban-environmental-station"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.22740968"
+    description: "DOI de concepto (todas las versiones)"
 keywords:
   - sensores de bajo costo
   - calidad del aire

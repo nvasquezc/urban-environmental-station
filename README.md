@@ -1,6 +1,9 @@
 # Urban Environmental Station
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22740968.svg)](https://doi.org/10.5281/zenodo.22740968)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Firmware CI](https://github.com/nvasquezc/urban-environmental-station/actions/workflows/firmware.yml/badge.svg)](https://github.com/nvasquezc/urban-environmental-station/actions/workflows/firmware.yml)
+[![Analysis CI](https://github.com/nvasquezc/urban-environmental-station/actions/workflows/analysis.yml/badge.svg)](https://github.com/nvasquezc/urban-environmental-station/actions/workflows/analysis.yml)
 
 Estación ambiental urbana de bajo costo con trazabilidad metrológica declarada.
 
@@ -42,6 +45,14 @@ en LittleFS → Firebase RTDB → capa bronze/silver/gold → validación por co
 | Presión (QFE) | BMP280 | 500 a 1100 hPa | pendiente de co-ubicación |
 | Nivel sonoro | DFR0034 | sin determinar | **no trazable** |
 
+## Plataformas soportadas
+
+| Entorno | Hardware | Frontend de sonido |
+|---|---|---|
+| `esp8266_d1mini` | ESP8266 D1 mini | Analógico (no trazable) |
+| `esp32s3_analog` | ESP32-S3 | Analógico (no trazable) |
+| `esp32s3_i2s` | ESP32-S3 | MEMS I2S con ponderación A |
+
 ## Compilar el firmware
 
 ```bash
@@ -49,6 +60,8 @@ cp firmware/include/secrets.example.h firmware/include/secrets.h
 # editar secrets.h con las credenciales propias
 pio run -d firmware -e esp8266_d1mini -t upload
 ```
+
+Requiere PlatformIO Core >= 6.2.0 y el módulo `intelhex` para los builds de ESP32.
 
 ## Reproducir el análisis
 
@@ -63,10 +76,15 @@ uv run python tools/gen_aweighting.py
 - [Protocolo de calibración](docs/02-protocolo-calibracion.md)
 - [Esquema de datos](docs/03-esquema-de-datos.md)
 - [Limitaciones conocidas](docs/06-limitaciones-conocidas.md)
+- [Registro de cambios](CHANGELOG.md)
 
 ## Cómo citar
 
-Ver [CITATION.cff](CITATION.cff).
+Vásquez Castro, N. O. (2026). *Urban Environmental Station: estación ambiental urbana
+de bajo costo con trazabilidad metrológica* (v0.2.0). Zenodo.
+https://doi.org/10.5281/zenodo.22740968
+
+Metadatos completos en [CITATION.cff](CITATION.cff).
 
 ## Licencias
 
