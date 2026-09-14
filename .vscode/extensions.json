@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "platformio.platformio-ide",
+    "ms-vscode.cpptools",
+    "charliermarsh.ruff",
+    "ms-python.python",
+    "ms-toolsai.jupyter",
+    "tamasfe.even-better-toml",
+    "yzhang.markdown-all-in-one",
+    "eamodio.gitlens"
+  ]
+}

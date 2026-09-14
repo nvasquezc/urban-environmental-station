@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "fw: compilar (esp8266)",
+      "type": "shell",
+      "command": "pio run -d firmware -e esp8266_d1mini",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$platformio"
+    },
+    {
+      "label": "fw: compilar (esp32s3 analogico)",
+      "type": "shell",
+      "command": "pio run -d firmware -e esp32s3_analog",
+      "problemMatcher": "$platformio"
+    },
+    {
+      "label": "fw: compilar (esp32s3 i2s)",
+      "type": "shell",
+      "command": "pio run -d firmware -e esp32s3_i2s",
+      "problemMatcher": "$platformio"
+    },
+    {
+      "label": "fw: subir y monitorear",
+      "type": "shell",
+      "command": "pio run -d firmware -e esp8266_d1mini -t upload -t monitor",
+      "problemMatcher": []
+    },
+    {
+      "label": "an: generar coeficientes ponderacion A",
+      "type": "shell",
+      "command": "cd analysis && uv run python tools/gen_aweighting.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "an: tests",
+      "type": "shell",
+      "command": "cd analysis && uv run pytest -q",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

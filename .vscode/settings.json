@@ -1,0 +1,28 @@
+{
+  "files.associations": {
+    "*.h": "cpp",
+    "*.tpp": "cpp"
+  },
+  "C_Cpp.default.cppStandard": "c++17",
+  "C_Cpp.intelliSenseEngine": "default",
+  "platformio-ide.useBuiltinPIOCore": true,
+  "platformio-ide.disablePIOHomeStartup": true,
+
+  "python.defaultInterpreterPath": "${workspaceFolder}\\analysis\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
+  },
+
+  "editor.rulers": [100],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "search.exclude": {
+    "**/.pio/**": true,
+    "**/.venv/**": true,
+    "**/data/bronze/**": true,
+    "**/data/silver/**": true
+  }
+}
