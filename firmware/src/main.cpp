@@ -494,3 +494,4 @@ void loop() {
   reintentarSensores();
   vigilarWiFi();
 }
+
