@@ -1,0 +1,46 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar PlatformIO
+        run: pip install "platformio>=6.2.0" intelhex
+
+      - name: Cachear paquetes de PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Generar secrets.h de prueba
+        run: cp firmware/include/secrets.example.h firmware/include/secrets.h
+
+      - name: Compilar ESP8266
+        run: pio run -d firmware -e esp8266_d1mini
+
+      - name: Compilar ESP32-S3 (analogico)
+        run: pio run -d firmware -e esp32s3_analog
+
+      - name: Compilar ESP32-S3 (I2S)
+        run: pio run -d firmware -e esp32s3_i2s
