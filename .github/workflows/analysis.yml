@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'analysis/**'
+  workflow_dispatch:
 
 jobs:
   test:

@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'firmware/**'
+  workflow_dispatch:
 
 jobs:
   build:
