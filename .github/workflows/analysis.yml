@@ -1,0 +1,33 @@
+name: Analysis CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'analysis/**'
+      - '.github/workflows/analysis.yml'
+  pull_request:
+    paths:
+      - 'analysis/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: analysis
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Instalar dependencias
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Tests
+        run: uv run pytest -q
