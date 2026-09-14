@@ -19,7 +19,9 @@
  */
 #include <Arduino.h>
 #include <Wire.h>
-#include <SoftwareSerial.h>
+#if defined(ESP8266)
+  #include <SoftwareSerial.h>
+#endif
 #include <TinyGPS++.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -48,7 +50,11 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);
 Adafruit_BMP280  bmp;
 Adafruit_AHTX0   aht;
 TinyGPSPlus      gps;
-SoftwareSerial   gpsSerial(PIN_GPS_RX, PIN_GPS_TX);
+#if defined(ESP8266)
+  SoftwareSerial gpsSerial(PIN_GPS_RX, PIN_GPS_TX);
+#else
+  HardwareSerial& gpsSerial = Serial1;   // UART1 por hardware
+#endif
 WiFiClientSecure tls;
 HTTPClient       http;
 
@@ -413,7 +419,11 @@ void vigilarWiFi() {
 
 // --------------------------- Setup / Loop -------------------------
 void setup() {
-  Serial.begin(115200);
+  #if defined(ESP8266)
+  gpsSerial.begin(9600);
+#else
+  gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+#endif
   delay(200);
   plat::chipId(deviceId, sizeof(deviceId));
   plat::resetReason(resetReason, sizeof(resetReason));
