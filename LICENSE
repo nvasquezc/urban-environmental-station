@@ -1,0 +1,1 @@
+curl.exe -sL https://www.apache.org/licenses/LICENSE-2.0.txt -o LICENSE

@@ -1,0 +1,19 @@
+{
+  "@context": "https://doi.org/10.5063/schema/codemeta-2.0",
+  "@type": "SoftwareSourceCode",
+  "name": "Urban Environmental Station",
+  "version": "0.2.0",
+  "license": "https://spdx.org/licenses/Apache-2.0",
+  "codeRepository": "https://github.com/nvasquezc/urban-environmental-station",
+  "programmingLanguage": ["C++", "Python"],
+  "runtimePlatform": ["ESP8266", "ESP32", "Python 3.12"],
+  "developmentStatus": "wip",
+  "author": [
+    {
+      "@type": "Person",
+      "givenName": "Néstor Oswaldo",
+      "familyName": "Vásquez Castro",
+      "@id": "https://orcid.org/0009-0003-6483-790X"
+    }
+  ]
+}

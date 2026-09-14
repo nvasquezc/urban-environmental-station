@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "Si usa este software o estos datos, por favor cítelos como se indica."
+type: software
+title: "Urban Environmental Station: estación ambiental urbana de bajo costo con trazabilidad metrológica"
+abstract: >-
+  Firmware, protocolo de calibración y cadena de análisis para una estación
+  ambiental urbana de bajo costo (temperatura, humedad relativa, presión
+  barométrica y nivel sonoro). El sistema agrega intervalos alineados al reloj
+  con estadísticos de dispersión y diagnóstico de estado, y se valida por
+  co-ubicación con estaciones de la Red de Monitoreo de Calidad del Aire de
+  Bogotá (RMCAB). El foco de investigación es la caracterización de
+  incertidumbre y deriva de sensores de bajo costo en condiciones urbanas
+  reales, no la simple obtención de lecturas.
+authors:
+  - family-names: "Vásquez Castro"
+    given-names: "Néstor Oswaldo"
+    orcid: "https://orcid.org/0009-0003-6483-790X"
+    affiliation: "Jitter Ingeniería SAS / Universidad Central"
+    country: CO
+version: "0.2.0"
+date-released: "2026-09-11"
+license: Apache-2.0
+repository-code: "https://github.com/nvasquezc/urban-environmental-station"
+keywords:
+  - sensores de bajo costo
+  - calidad del aire
+  - ruido ambiental
+  - calibración in situ
+  - sistemas embebidos
+  - IoT ambiental
+  - Bogotá
+  - metrología
