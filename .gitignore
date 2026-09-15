@@ -64,3 +64,8 @@ hardware/**/*.zip
 .DS_Store
 Thumbs.db
 desktop.ini
+# Credenciales de cuenta de servicio
+*-firebase-adminsdk-*.json
+
+# Credenciales de cuenta de servicio
+*-firebase-adminsdk-*.json
