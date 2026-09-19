@@ -69,3 +69,6 @@ desktop.ini
 
 # Credenciales de cuenta de servicio
 *-firebase-adminsdk-*.json
+
+# Caché del tablero
+analysis/dashboard/cache/*.parquet

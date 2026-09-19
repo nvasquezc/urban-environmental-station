@@ -1,6 +1,13 @@
 {
   "version": "2.0.0",
   "tasks": [
+
+        {
+      "label": "dash: iniciar tablero",
+      "type": "shell",
+      "command": "cd analysis && uv run python -m dashboard.app",
+      "problemMatcher": []
+    },
     {
       "label": "fw: compilar (esp8266)",
       "type": "shell",

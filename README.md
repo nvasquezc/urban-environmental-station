@@ -31,6 +31,17 @@ una escala sin ponderación frecuencial y no son comparables con un sonómetro c
 o 2. No deben usarse con fines normativos ni legales.
 Ver [docs/06-limitaciones-conocidas.md](docs/06-limitaciones-conocidas.md).
 
+## Resultados preliminares
+
+![Descomposición de la señal](docs/figuras/01-descomposicion.png)
+
+El ciclo diurno explica el 92.7 % de la varianza observada; el residual presenta
+una dispersión de 0.389 °C, del orden de la incertidumbre de fábrica del sensor.
+La autocorrelación del residual decae a los 75 minutos, lo que indica un
+sobremuestreo de factor 15 respecto al intervalo actual de 5 minutos.
+
+Resultados completos en [docs/07-resultados-campania.md](docs/07-resultados-campania.md).
+
 ## Arquitectura
 
 Nodo embebido → agregación de intervalos de 5 min alineados al reloj → cola persistente
