@@ -13,6 +13,7 @@ from uestation.decompose import (
     incertidumbre_expandida,
     matriz_hora_dia,
     tiempo_decorrelacion,
+    variabilidad_diaria,
 )
 
 
@@ -38,7 +39,7 @@ def serie_ciclica():
 
 @pytest.fixture
 def serie_con_deriva():
-    """Ciclo diurno con calentamiento de 0.35 °C por día."""
+    """Ciclo diurno con calentamiento sostenido de 0.35 °C por día."""
     return _serie(dias=8, pendiente=0.35)
 
 
@@ -90,10 +91,6 @@ class TestTendencia:
         d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
         assert abs(d.pendiente_dia - 0.35) < 0.02
 
-    def test_pendiente_significativa(self, serie_con_deriva):
-        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
-        assert d.pendiente_significativa
-
     def test_sin_deriva_la_pendiente_es_nula(self, serie_ciclica):
         d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom", con_tendencia=True)
         assert abs(d.pendiente_dia) < 0.02
@@ -125,26 +122,91 @@ class TestTendencia:
         assert d.pendiente_dia == 0.0
 
 
-class TestDeteccionAutomatica:
-    def test_recomienda_ante_deriva(self, serie_con_deriva):
+class TestDeteccionRobusta:
+    def test_confirma_deriva_real(self, serie_con_deriva):
+        """Una deriva sostenida satisface los tres criterios."""
         r = detectar_tendencia(serie_con_deriva)
         assert r["recomendada"]
-        assert abs(r["pendiente_dia"] - 0.35) < 0.02
+        assert r["supera_umbral"]
+        assert r["significativa_corregida"]
+        assert r["consistente"]
+        assert r["homogenea"]
+        assert abs(r["pendiente_dia"] - 0.35) < 0.03
 
-    def test_no_recomienda_sin_deriva(self, serie_ciclica):
+    def test_rechaza_serie_sin_deriva(self, serie_ciclica):
         assert not detectar_tendencia(serie_ciclica)["recomendada"]
 
-    def test_reporta_la_mejora(self, serie_con_deriva):
+    def test_corrige_el_error_estandar(self, serie_con_deriva):
+        """La corrección por autocorrelación amplía el error estándar."""
         r = detectar_tendencia(serie_con_deriva)
-        assert r["mejora_sigma"] > 0.5
-        assert r["sigma_con"] < r["sigma_sin"]
+        assert r["pendiente_ee_corregido"] >= r["pendiente_ee_nominal"]
+        assert r["n_efectivo"] <= r["n_observaciones"]
+
+    def test_rechaza_pendiente_por_extremos(self):
+        """Dos desplazamientos de nivel en los extremos no son una deriva.
+
+        La serie es estacionaria salvo por un descenso en la primera jornada y
+        un ascenso en la última. El ajuste global detecta pendiente positiva;
+        el criterio de homogeneidad la rechaza, porque las pendientes locales
+        de los bloques extremos exceden con mucho a la global.
+        """
+        df = _serie(dias=8, pendiente=0.0, semilla=11)
+        n = len(df)
+        df.loc[:288, "temp_c.prom"] -= 1.5
+        df.loc[n - 288:, "temp_c.prom"] += 1.5
+
+        r = detectar_tendencia(df)
+        assert not r["recomendada"]
+        assert not r["homogenea"]
+
+    def test_informa_las_pendientes_por_bloque(self, serie_con_deriva):
+        r = detectar_tendencia(serie_con_deriva)
+        assert len(r["bloques_pendientes"]) >= 3
+        assert all(p > 0 for p in r["bloques_pendientes"])
+
+    def test_declara_el_motivo(self, serie_ciclica):
+        r = detectar_tendencia(serie_ciclica)
+        assert isinstance(r["motivo"], str) and r["motivo"]
 
     def test_serie_insuficiente_no_falla(self):
         df = pd.DataFrame({
             "t_fin": pd.date_range("2026-09-15", periods=6, freq="5min", tz="UTC"),
             "temp_c.prom": [19.0] * 6,
         })
-        assert not detectar_tendencia(df)["recomendada"]
+        r = detectar_tendencia(df)
+        assert not r["recomendada"]
+        assert r["motivo"] == "serie insuficiente"
+
+
+class TestVariabilidadDiaria:
+    def test_una_fila_por_jornada(self, serie_con_deriva):
+        v = variabilidad_diaria(serie_con_deriva)
+        assert len(v) >= 6
+        assert {"fecha", "n", "sesgo", "dispersion", "amplitud"} <= set(v.columns)
+
+    def test_detecta_jornada_atipica(self, serie_ciclica):
+        """Un día desplazado se refleja en el sesgo del residual."""
+        df = serie_ciclica.copy()
+        df.loc[288:575, "temp_c.prom"] -= 1.2
+        v = variabilidad_diaria(df)
+        assert v["sesgo"].min() < -0.5
+
+    def test_detecta_cambio_de_amplitud(self, serie_ciclica):
+        """Amplificar el ciclo de una jornada eleva su dispersión residual.
+
+        El umbral es moderado porque el ajuste global se contamina en parte
+        con la jornada amplificada, lo que eleva también la dispersión de las
+        restantes.
+        """
+        df = serie_ciclica.copy()
+        seg = df.loc[288:575, "temp_c.prom"]
+        df.loc[288:575, "temp_c.prom"] = seg.mean() + (seg - seg.mean()) * 2.2
+        v = variabilidad_diaria(df)
+        assert v["dispersion"].max() > 1.5 * v["dispersion"].min()
+
+    def test_descarta_jornadas_incompletas(self, serie_ciclica):
+        v = variabilidad_diaria(serie_ciclica)
+        assert (v["n"] >= 200).all()
 
 
 class TestAutocorrelacion:

@@ -10,6 +10,11 @@ fondo no se modela explícitamente queda absorbida por el residual, inflando
 la dispersión aparente y distorsionando la estimación del tiempo de
 decorrelación, que pasa a medir la tendencia en lugar de la persistencia.
 
+Ahora bien, incorporar una tendencia inexistente es un error simétrico y más
+grave, porque produce una afirmación positiva infundada. Por ello la decisión
+se delega a `detectar_tendencia`, que somete la pendiente a tres criterios
+independientes antes de recomendarla.
+
 Modelo:
 
     y(t) = a₀ + b·t + Σₖ [aₖ·cos(2πkh/24) + bₖ·sen(2πkh/24)] + ε
@@ -23,6 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 TZ_LOCAL = "America/Bogota"
 
@@ -63,11 +69,12 @@ class Descomposicion:
 
     @property
     def pendiente_significativa(self) -> bool:
-        """Contraste aproximado de pendiente nula al 95 % de confianza.
+        """Contraste nominal de pendiente nula al 95 % de confianza.
 
-        Se compara la estimación con dos veces su error estándar. El criterio
-        es orientativo: la autocorrelación del residual reduce los grados de
-        libertad efectivos y el error estándar nominal subestima el real.
+        Se compara la estimación con dos veces su error estándar. **Este
+        criterio no corrige por autocorrelación** y, en series de muestreo
+        denso, resulta excesivamente permisivo. Para decidir la inclusión de
+        una tendencia debe emplearse `detectar_tendencia`.
         """
         if not self.con_tendencia or self.pendiente_ee == 0:
             return False
@@ -92,9 +99,9 @@ def ajustar_ciclo_diurno(
     Parameters
     ----------
     con_tendencia
-        Incorpora un término lineal en el tiempo. Debe activarse cuando la
-        serie presenta deriva de fondo; en caso contrario, esa deriva se
-        traslada íntegramente al residual.
+        Incorpora un término lineal en el tiempo. Debe activarse únicamente
+        cuando `detectar_tendencia` confirme la deriva; en caso contrario se
+        introduce una componente espuria.
 
     Raises
     ------
@@ -144,7 +151,7 @@ def ajustar_ciclo_diurno(
     var_explicada = (1.0 - float(np.var(residual, ddof=1)) / var_total
                      if var_total > 0 else 0.0)
 
-    # Amplitud del primer armónico: magnitud característica del ciclo diurno.
+    # Amplitud pico a pico del primer armónico: magnitud característica del ciclo.
     i0 = 2 if con_tendencia else 1
     amplitud = float(2.0 * np.hypot(coef[i0], coef[i0 + 1]))
 
@@ -177,44 +184,249 @@ def ajustar_ciclo_diurno(
     )
 
 
+def _autocorrelacion_lag1(x: np.ndarray) -> float:
+    """Autocorrelación de primer orden de una serie."""
+    if len(x) < 3:
+        return 0.0
+    c = x - x.mean()
+    den = float(np.dot(c, c))
+    if den == 0:
+        return 0.0
+    return float(np.dot(c[:-1], c[1:]) / den)
+
+
+def _n_efectivo(n: int, rho: float) -> float:
+    """Tamaño de muestra efectivo ante autocorrelación de primer orden.
+
+        n_ef ≈ n · (1 − ρ) / (1 + ρ)
+
+    Aproximación estándar para procesos AR(1). Observaciones correlacionadas
+    aportan menos información independiente de la que sugiere su número: sin
+    esta corrección, el error estándar nominal subestima el real y casi
+    cualquier pendiente resulta «significativa» en series largas.
+    """
+    rho = float(np.clip(rho, -0.99, 0.99))
+    return max(n * (1.0 - rho) / (1.0 + rho), 3.0)
+
+
 def detectar_tendencia(
     df: pd.DataFrame,
     columna: str = "temp_c.prom",
     col_tiempo: str = "t_fin",
     umbral_c_dia: float = 0.10,
-) -> dict[str, float | bool]:
-    """Evalúa si la serie justifica incorporar un término de tendencia.
+    n_bloques: int = 4,
+    fraccion_consistente: float = 0.75,
+    cv_maximo: float = 0.60,
+    razon_maxima: float = 2.0,
+) -> dict:
+    """Contrasta la presencia de una deriva sistemática en la serie.
 
-    Compara el ajuste con y sin deriva lineal. El criterio combina dos
-    condiciones: que la pendiente supere un umbral de relevancia práctica y
-    que la reducción de dispersión residual sea apreciable. Exigir ambas evita
-    tanto modelar ruido como ignorar derivas reales.
+    Se exige la satisfacción simultánea de tres criterios:
+
+    1. **Relevancia práctica.** La pendiente supera `umbral_c_dia`. Una deriva
+       por debajo de ese valor carece de consecuencia interpretativa aunque
+       resulte estadísticamente detectable.
+
+    2. **Significancia corregida por autocorrelación.** El error estándar
+       nominal se infla por el factor √(n/n_ef), con n_ef el tamaño de muestra
+       efectivo estimado desde la autocorrelación de primer orden del residual.
+       El estadístico resultante se contrasta contra el valor crítico de t con
+       los grados de libertad efectivos, no contra el 1.96 asintótico: con
+       autocorrelación elevada n_ef es reducido y el umbral correcto es mayor.
+
+    3. **Homogeneidad entre bloques.** La serie se divide en `n_bloques` tramos
+       y se ajusta el modelo en cada uno. Se exige coincidencia de signo,
+       coeficiente de variación de las pendientes locales inferior a
+       `cv_maximo`, y que ninguna exceda `razon_maxima` veces la global.
+
+       El signo por sí solo no discrimina una rampa sostenida de una serie que
+       oscila en torno a cero: basta con que los extremos queden desplazados
+       para que el ajuste global produzca pendiente aparente. El coeficiente
+       de variación distingue ambos casos, porque en una deriva genuina los
+       bloques reproducen la pendiente global y su dispersión es pequeña
+       frente a la magnitud estimada.
+
+    El tercer criterio responde al principio que motiva la estratificación
+    obligatoria del protocolo §6.3: un estadístico global que no sobrevive a
+    la partición de la muestra no constituye un hallazgo.
+
+    Returns
+    -------
+    dict
+        `recomendada` resume el contraste; `motivo` explicita la razón de la
+        decisión. Los campos restantes documentan cada criterio por separado,
+        de modo que el resultado sea auditable.
     """
+    base = {
+        "recomendada": False,
+        "pendiente_dia": 0.0,
+        "pendiente_ee_nominal": 0.0,
+        "pendiente_ee_corregido": 0.0,
+        "razon_senal_ruido": 0.0,
+        "t_critico": 0.0,
+        "gl_efectivos": 0.0,
+        "rho_lag1": 0.0,
+        "n_observaciones": 0,
+        "n_efectivo": 0.0,
+        "supera_umbral": False,
+        "significativa_corregida": False,
+        "bloques_pendientes": [],
+        "bloques_consistentes": 0,
+        "n_bloques_validos": 0,
+        "consistente": False,
+        "homogenea": False,
+        "dispersion_bloques": 0.0,
+        "cv_bloques": 0.0,
+        "mejora_sigma": 0.0,
+        "sigma_sin": np.nan,
+        "sigma_con": np.nan,
+        "r2_sin": np.nan,
+        "r2_con": np.nan,
+        "motivo": "serie insuficiente",
+    }
+
     try:
         sin_t = ajustar_ciclo_diurno(df, columna, col_tiempo, con_tendencia=False)
         con_t = ajustar_ciclo_diurno(df, columna, col_tiempo, con_tendencia=True)
     except (ValueError, np.linalg.LinAlgError):
-        return {"recomendada": False, "pendiente_dia": 0.0,
-                "mejora_sigma": 0.0, "significativa": False}
+        return base
+
+    # --- Criterio 2: significancia corregida por autocorrelación ---
+    n = len(con_t.residual)
+    rho = _autocorrelacion_lag1(con_t.residual.to_numpy(dtype=float))
+    n_ef = _n_efectivo(n, rho)
+
+    # El error estándar escala con la raíz del tamaño de muestra.
+    ee_corr = con_t.pendiente_ee * np.sqrt(n / n_ef) if n_ef > 0 else np.inf
+    rsr = abs(con_t.pendiente_dia) / ee_corr if ee_corr > 0 else 0.0
+
+    gl_ef = max(n_ef - 2.0, 1.0)
+    t_critico = float(stats.t.ppf(0.975, gl_ef))
+    significativa = rsr > t_critico
 
     mejora = ((sin_t.sigma_residual - con_t.sigma_residual) / sin_t.sigma_residual
               if sin_t.sigma_residual > 0 else 0.0)
 
-    return {
-        "recomendada": bool(
-            abs(con_t.pendiente_dia) > umbral_c_dia
-            and mejora > 0.05
-            and con_t.pendiente_significativa
-        ),
+    # --- Criterio 3: homogeneidad entre bloques ---
+    d = df[[col_tiempo, columna]].dropna().sort_values(col_tiempo).reset_index(drop=True)
+    t0, t1 = d[col_tiempo].iloc[0], d[col_tiempo].iloc[-1]
+    bordes = pd.date_range(t0, t1, periods=n_bloques + 1)
+
+    pendientes = []
+    for i in range(n_bloques):
+        tramo = d[(d[col_tiempo] >= bordes[i]) & (d[col_tiempo] < bordes[i + 1])]
+        try:
+            m = ajustar_ciclo_diurno(tramo, columna, col_tiempo, con_tendencia=True)
+            pendientes.append(round(float(m.pendiente_dia), 4))
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+
+    signo_global = np.sign(con_t.pendiente_dia)
+    coincidentes = sum(1 for p in pendientes if np.sign(p) == signo_global)
+
+    if len(pendientes) >= 2 and con_t.pendiente_dia != 0:
+        arr = np.array(pendientes, dtype=float)
+        dispersion_bloques = float(np.std(arr, ddof=1))
+        cv_bloques = dispersion_bloques / abs(con_t.pendiente_dia)
+        razon = np.abs(arr / con_t.pendiente_dia)
+        homogenea = bool(cv_bloques < cv_maximo and razon.max() < razon_maxima)
+    else:
+        homogenea = False
+        dispersion_bloques = 0.0
+        cv_bloques = float("inf")
+
+    mismo_signo = (len(pendientes) >= 2
+                   and coincidentes / len(pendientes) >= fraccion_consistente)
+    consistente = mismo_signo and homogenea
+
+    supera = abs(con_t.pendiente_dia) > umbral_c_dia
+
+    if not supera:
+        motivo = f"pendiente por debajo del umbral de relevancia ({umbral_c_dia} °C/día)"
+    elif not significativa:
+        motivo = (f"no significativa al corregir por autocorrelación "
+                  f"(t = {rsr:.2f} ≤ {t_critico:.2f} con {gl_ef:.0f} gl efectivos)")
+    elif not mismo_signo:
+        motivo = (f"signo inconsistente entre bloques "
+                  f"({coincidentes} de {len(pendientes)})")
+    elif not homogenea:
+        motivo = (f"pendientes locales heterogéneas (CV = {cv_bloques:.2f}): "
+                  "el comportamiento sugiere variabilidad meteorológica antes "
+                  "que una deriva sostenida")
+    else:
+        motivo = "deriva sistemática confirmada por los tres criterios"
+
+    base.update({
+        "recomendada": bool(supera and significativa and consistente),
         "pendiente_dia": con_t.pendiente_dia,
-        "pendiente_ee": con_t.pendiente_ee,
-        "significativa": con_t.pendiente_significativa,
+        "pendiente_ee_nominal": con_t.pendiente_ee,
+        "pendiente_ee_corregido": float(ee_corr),
+        "razon_senal_ruido": float(rsr),
+        "t_critico": t_critico,
+        "gl_efectivos": float(gl_ef),
+        "rho_lag1": rho,
+        "n_observaciones": n,
+        "n_efectivo": float(n_ef),
+        "supera_umbral": bool(supera),
+        "significativa_corregida": bool(significativa),
+        "bloques_pendientes": pendientes,
+        "bloques_consistentes": coincidentes,
+        "n_bloques_validos": len(pendientes),
+        "consistente": bool(consistente),
+        "homogenea": homogenea,
+        "dispersion_bloques": dispersion_bloques,
+        "cv_bloques": float(cv_bloques),
         "mejora_sigma": mejora,
         "sigma_sin": sin_t.sigma_residual,
         "sigma_con": con_t.sigma_residual,
         "r2_sin": sin_t.varianza_explicada,
         "r2_con": con_t.varianza_explicada,
-    }
+        "motivo": motivo,
+    })
+    return base
+
+
+def variabilidad_diaria(
+    df: pd.DataFrame,
+    columna: str = "temp_c.prom",
+    col_tiempo: str = "t_fin",
+    n_armonicos: int = 3,
+    cobertura_minima: int = 200,
+) -> pd.DataFrame:
+    """Caracteriza día a día el ajuste del ciclo diurno.
+
+    Ajusta el modelo sobre la serie completa y resume el residual por jornada
+    local. Una dispersión residual que varía entre días indica que la amplitud
+    del ciclo no es constante: bajo cielo despejado la oscilación térmica
+    diaria supera a la observada con cobertura nubosa.
+
+    El sesgo diario, media del residual, identifica jornadas atípicas respecto
+    al comportamiento medio del período. A diferencia de una tendencia, estas
+    desviaciones no siguen una dirección sostenida.
+    """
+    m = ajustar_ciclo_diurno(df, columna, col_tiempo, n_armonicos=n_armonicos)
+
+    d = df[[col_tiempo, columna]].dropna().sort_values(col_tiempo).reset_index(drop=True)
+    local = (d[col_tiempo].dt.tz_convert(TZ_LOCAL)
+             if d[col_tiempo].dt.tz is not None else d[col_tiempo])
+
+    r = pd.DataFrame({
+        "fecha": local.dt.date,
+        "residual": m.residual.to_numpy(dtype=float),
+        "observado": m.observado.to_numpy(dtype=float),
+    })
+
+    g = r.groupby("fecha")
+    out = pd.DataFrame({
+        "n": g["residual"].count(),
+        "sesgo": g["residual"].mean(),
+        "dispersion": g["residual"].std(ddof=1),
+        "amplitud": g["observado"].max() - g["observado"].min(),
+        "media": g["observado"].mean(),
+    }).reset_index()
+
+    # Solo jornadas con cobertura suficiente para que el resumen sea comparable.
+    return out[out["n"] >= cobertura_minima].reset_index(drop=True)
 
 
 def autocorrelacion(serie: pd.Series, max_rezago: int = 288) -> pd.DataFrame:
