@@ -9,26 +9,41 @@ import pytest
 from uestation.decompose import (
     ajustar_ciclo_diurno,
     autocorrelacion,
+    detectar_tendencia,
     incertidumbre_expandida,
     matriz_hora_dia,
     tiempo_decorrelacion,
 )
 
 
-@pytest.fixture
-def serie_ciclica():
-    """Ciclo diurno puro de amplitud 4 °C más ruido blanco de sigma 0.2."""
-    rng = np.random.default_rng(7)
-    t = pd.date_range("2026-09-15", periods=288 * 3, freq="5min", tz="UTC")
+def _serie(dias=3, amplitud=4.0, ruido=0.2, pendiente=0.0, semilla=7):
+    """Ciclo diurno sintético con tendencia y ruido controlados."""
+    rng = np.random.default_rng(semilla)
+    n = 288 * dias
+    t = pd.date_range("2026-09-15", periods=n, freq="5min", tz="UTC")
     local = t.tz_convert("America/Bogota")
     h = local.hour + local.minute / 60.0
-    y = 19.0 + 4.0 * np.sin(2 * np.pi * (h - 9) / 24.0) + rng.normal(0, 0.2, len(t))
+    d = np.arange(n) * 5 / 1440.0  # días transcurridos
+    y = (19.0
+         + pendiente * d
+         + amplitud * np.sin(2 * np.pi * (h - 9) / 24.0)
+         + rng.normal(0, ruido, n))
     return pd.DataFrame({"t_fin": t, "temp_c.prom": y})
+
+
+@pytest.fixture
+def serie_ciclica():
+    return _serie()
+
+
+@pytest.fixture
+def serie_con_deriva():
+    """Ciclo diurno con calentamiento de 0.35 °C por día."""
+    return _serie(dias=8, pendiente=0.35)
 
 
 class TestCicloDiurno:
     def test_explica_casi_toda_la_varianza(self, serie_ciclica):
-        """Una señal sinusoidal con poco ruido debe quedar casi totalmente explicada."""
         d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
         assert d.varianza_explicada > 0.95
 
@@ -36,15 +51,24 @@ class TestCicloDiurno:
         d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
         assert abs(d.sigma_residual - 0.2) < 0.05
 
+    def test_amplitud_diurna_recuperada(self, serie_ciclica):
+        """La amplitud pico a pico del primer armónico duplica la del seno."""
+        d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
+        assert abs(d.amplitud_diurna - 8.0) < 0.3
+
     def test_residual_centrado(self, serie_ciclica):
         d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
         assert abs(d.residual.mean()) < 1e-6
 
+    def test_identidad_de_descomposicion(self, serie_ciclica):
+        """observado = ciclo + residual, por construcción."""
+        d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
+        assert np.allclose(d.observado, d.ciclo + d.residual)
+
     def test_bandas_simetricas(self, serie_ciclica):
         d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom")
-        ancho_sup = (d.banda_superior - d.ciclo).iloc[0]
-        ancho_inf = (d.ciclo - d.banda_inferior).iloc[0]
-        assert abs(ancho_sup - ancho_inf) < 1e-9
+        assert abs((d.banda_superior - d.ciclo).iloc[0]
+                   - (d.ciclo - d.banda_inferior).iloc[0]) < 1e-9
 
     def test_detecta_anomalia_inyectada(self, serie_ciclica):
         df = serie_ciclica.copy()
@@ -61,6 +85,68 @@ class TestCicloDiurno:
             ajustar_ciclo_diurno(df, "temp_c.prom")
 
 
+class TestTendencia:
+    def test_recupera_la_pendiente(self, serie_con_deriva):
+        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
+        assert abs(d.pendiente_dia - 0.35) < 0.02
+
+    def test_pendiente_significativa(self, serie_con_deriva):
+        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
+        assert d.pendiente_significativa
+
+    def test_sin_deriva_la_pendiente_es_nula(self, serie_ciclica):
+        d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom", con_tendencia=True)
+        assert abs(d.pendiente_dia) < 0.02
+
+    def test_ignorar_la_deriva_infla_el_residual(self, serie_con_deriva):
+        """Sin término de tendencia, la deriva se traslada al residual."""
+        sin_t = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom",
+                                     con_tendencia=False)
+        con_t = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom",
+                                     con_tendencia=True)
+        assert sin_t.sigma_residual > 3 * con_t.sigma_residual
+
+    def test_con_tendencia_recupera_el_ruido(self, serie_con_deriva):
+        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
+        assert abs(d.sigma_residual - 0.2) < 0.05
+
+    def test_identidad_con_tendencia(self, serie_con_deriva):
+        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
+        assert np.allclose(d.observado, d.ciclo + d.residual)
+
+    def test_serie_de_tendencia_disponible(self, serie_con_deriva):
+        d = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom", con_tendencia=True)
+        assert d.tendencia is not None
+        assert len(d.tendencia) == len(d.observado)
+
+    def test_sin_tendencia_no_genera_la_serie(self, serie_ciclica):
+        d = ajustar_ciclo_diurno(serie_ciclica, "temp_c.prom", con_tendencia=False)
+        assert d.tendencia is None
+        assert d.pendiente_dia == 0.0
+
+
+class TestDeteccionAutomatica:
+    def test_recomienda_ante_deriva(self, serie_con_deriva):
+        r = detectar_tendencia(serie_con_deriva)
+        assert r["recomendada"]
+        assert abs(r["pendiente_dia"] - 0.35) < 0.02
+
+    def test_no_recomienda_sin_deriva(self, serie_ciclica):
+        assert not detectar_tendencia(serie_ciclica)["recomendada"]
+
+    def test_reporta_la_mejora(self, serie_con_deriva):
+        r = detectar_tendencia(serie_con_deriva)
+        assert r["mejora_sigma"] > 0.5
+        assert r["sigma_con"] < r["sigma_sin"]
+
+    def test_serie_insuficiente_no_falla(self):
+        df = pd.DataFrame({
+            "t_fin": pd.date_range("2026-09-15", periods=6, freq="5min", tz="UTC"),
+            "temp_c.prom": [19.0] * 6,
+        })
+        assert not detectar_tendencia(df)["recomendada"]
+
+
 class TestAutocorrelacion:
     def test_rezago_cero_es_uno(self, serie_ciclica):
         a = autocorrelacion(serie_ciclica["temp_c.prom"])
@@ -68,8 +154,7 @@ class TestAutocorrelacion:
 
     def test_ruido_blanco_decorrelaciona_de_inmediato(self):
         rng = np.random.default_rng(1)
-        s = pd.Series(rng.normal(0, 1, 2000))
-        a = autocorrelacion(s, max_rezago=50)
+        a = autocorrelacion(pd.Series(rng.normal(0, 1, 2000)), max_rezago=50)
         assert abs(a.iloc[1]["acf"]) < 0.1
 
     def test_serie_ciclica_conserva_correlacion(self, serie_ciclica):
@@ -78,14 +163,24 @@ class TestAutocorrelacion:
 
     def test_tiempo_decorrelacion_en_minutos(self, serie_ciclica):
         a = autocorrelacion(serie_ciclica["temp_c.prom"], max_rezago=288)
-        td = tiempo_decorrelacion(a)
-        assert td["minutos"] > 0
+        assert tiempo_decorrelacion(a)["minutos"] > 0
+
+    def test_la_tendencia_distorsiona_tau(self, serie_con_deriva):
+        """Sobre un residual con deriva, tau mide la tendencia, no la persistencia."""
+        sin_t = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom",
+                                     con_tendencia=False)
+        con_t = ajustar_ciclo_diurno(serie_con_deriva, "temp_c.prom",
+                                     con_tendencia=True)
+        tau_sin = tiempo_decorrelacion(
+            autocorrelacion(sin_t.residual, max_rezago=500))["minutos"]
+        tau_con = tiempo_decorrelacion(
+            autocorrelacion(con_t.residual, max_rezago=500))["minutos"]
+        assert tau_sin > tau_con
 
 
 class TestMatrizHoraDia:
     def test_dimensiones(self, serie_ciclica):
-        m = matriz_hora_dia(serie_ciclica, "temp_c.prom")
-        assert m.shape[0] == 24
+        assert matriz_hora_dia(serie_ciclica, "temp_c.prom").shape[0] == 24
 
 
 class TestIncertidumbre:

@@ -55,7 +55,7 @@ def pie_descomposicion(d: Descomposicion) -> list:
         )
 
     return [
-        html.Strong(f"Figura 1. "),
+        html.Strong("Figura 1. "),
         f"Serie observada, ciclo diurno ajustado mediante {d.n_armonicos} armónicos "
         f"de Fourier sobre la hora local, y residual resultante. El modelo explica el "
         f"{d.varianza_explicada:.1%} de la varianza total. ",
@@ -95,7 +95,6 @@ def pie_acf(td: dict, intervalo_actual_min: int = 5) -> list:
 def pie_histograma(d: Descomposicion) -> list:
     """Evalúa la normalidad aparente del residual."""
     from dash import html
-
     from scipy import stats
 
     r = d.residual.dropna().to_numpy()

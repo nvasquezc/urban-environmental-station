@@ -137,7 +137,7 @@ def main() -> None:
         "",
         f"**Nodo:** `{DEVICE_ID}`  ",
         f"**Período:** {t0:%Y-%m-%d %H:%M} a {t1:%Y-%m-%d %H:%M} (hora local)  ",
-        f"**Estado de calibración:** sin calibrar",
+        "**Estado de calibración:** sin calibrar",
         "",
         "## Indicadores",
         "",

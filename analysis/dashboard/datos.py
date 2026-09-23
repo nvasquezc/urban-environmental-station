@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-
 from dotenv import load_dotenv
 
 # Carga variables desde analysis/.env si el archivo existe.
