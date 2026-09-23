@@ -3,6 +3,12 @@
 Vista única: estado del sistema, zona de emplazamiento, descomposición de la
 señal, estructura temporal y registro de eventos.
 
+El modelo de descomposición incorpora un término de tendencia únicamente
+cuando el contraste de `detectar_tendencia` lo confirma. Los indicadores
+derivados —dispersión residual y tiempo de decorrelación— dependen de esa
+decisión, de modo que el panel de contraste no es informativo sino
+constitutivo: documenta por qué los valores mostrados son los que son.
+
 Ejecución:
     cd analysis
     uv run python -m dashboard.app
@@ -21,6 +27,7 @@ from dashboard.datos import DEVICE_ID, cargar, deserializar, serializar
 from uestation.decompose import (
     ajustar_ciclo_diurno,
     autocorrelacion,
+    detectar_tendencia,
     incertidumbre_expandida,
     matriz_hora_dia,
     tiempo_decorrelacion,
@@ -117,7 +124,6 @@ app.layout = html.Div([
                     html.Div(f"Nodo {DEVICE_ID} · Bogotá · UTC−5", className="sub"),
                 ]),
 
-                # Control de calidad en barras
                 html.Div([
                     barra_qc("Válidos", "qc-val", "qc-val-b", "qc-val-n"),
                     barra_qc("Completitud", "qc-comp", "qc-comp-b", "qc-comp-n"),
@@ -145,7 +151,7 @@ app.layout = html.Div([
 
                 # Fila 2 — descomposición + mapa
                 panel("Descomposición de la señal",
-                      "Observado, ciclo diurno ajustado y residual con banda ±2σ",
+                      "Observado, componente determinista y residual con banda ±2σ",
                       [dcc.Graph(id="g-descomp", config={"displayModeBar": False})], 8),
 
                 panel("Zona de emplazamiento",
@@ -156,7 +162,7 @@ app.layout = html.Div([
                           className="mapa-envoltura"),
                        html.Div(id="mapa-pie", className="mapa-pie")], 4),
 
-                # Fila 3 — ACF + matriz + eventos
+                # Fila 3 — ACF + matriz + contraste de tendencia
                 panel("Persistencia temporal",
                       "Autocorrelación del residual y tiempo de decorrelación",
                       [dcc.Graph(id="g-acf", config={"displayModeBar": False})], 4),
@@ -165,11 +171,12 @@ app.layout = html.Div([
                       "Temperatura media por hora local y fecha",
                       [dcc.Graph(id="g-matriz", config={"displayModeBar": False})], 4),
 
-                panel("Eventos recientes",
-                      "Anomalías y sucesos del sistema",
-                      [html.Div(id="eventos")], 4),
+                panel("Contraste de tendencia",
+                      "Tres criterios deciden si el modelo incorpora deriva",
+                      [html.Div(id="criterios"),
+                       html.Div(id="veredicto")], 4),
 
-                # Fila 4 — salud + histograma + diagnóstico
+                # Fila 4 — salud + histograma + eventos
                 panel("Estabilidad del nodo",
                       "Memoria libre y completitud del muestreo",
                       [dcc.Graph(id="g-salud", config={"displayModeBar": False})], 5),
@@ -181,6 +188,11 @@ app.layout = html.Div([
                 panel("Diagnóstico",
                       "Indicadores del instrumento",
                       [html.Table(html.Tbody(id="tabla"), className="tabla")], 3),
+
+                # Fila 5 — eventos
+                panel("Eventos recientes",
+                      "Anomalías y sucesos del sistema",
+                      [html.Div(id="eventos")], 12),
 
             ], className="rejilla"),
 
@@ -221,11 +233,21 @@ def _preparar(blob):
     return df, limpio, resumen
 
 
-def _descomponer(limpio):
+def _modelo(limpio):
+    """Ajusta la descomposición con la especificación que el contraste avala.
+
+    Devuelve (descomposición, resultado del contraste). El término de tendencia
+    se incorpora únicamente si los tres criterios lo respaldan; en caso
+    contrario se ajustaría una componente inexistente y el residual quedaría
+    artificialmente reducido.
+    """
+    contraste = detectar_tendencia(limpio, "temp_c.prom")
     try:
-        return ajustar_ciclo_diurno(limpio, "temp_c.prom")
+        d = ajustar_ciclo_diurno(limpio, "temp_c.prom",
+                                 con_tendencia=contraste["recomendada"])
     except (ValueError, np.linalg.LinAlgError):
-        return None
+        return None, contraste
+    return d, contraste
 
 
 def _ubicacion(df):
@@ -313,7 +335,7 @@ def _kpis(blob):
 
     c = completitud(limpio)
     u = incertidumbre_expandida(limpio)
-    d = _descomponer(limpio)
+    d, contraste = _modelo(limpio)
 
     tau_txt, tau_nota = g, ""
     if d is not None:
@@ -325,8 +347,12 @@ def _kpis(blob):
                         f"sobre el intervalo de {INTERVALO_MIN} min"]
 
     r2_txt = f"{d.varianza_explicada:.3f}" if d else g
-    r2_nota = (f"El ciclo diurno explica el {d.varianza_explicada:.1%} de la varianza"
-               if d else "")
+    if d is None:
+        r2_nota = ""
+    elif d.con_tendencia:
+        r2_nota = "ciclo diurno y deriva confirmada"
+    else:
+        r2_nota = f"ciclo diurno, {d.n_armonicos} armónicos"
 
     sigma_txt = f"{d.sigma_residual:.3f}" if d else g
     u_val = u.get("U_expandida_k2")
@@ -340,6 +366,62 @@ def _kpis(blob):
         r2_txt, r2_nota,
         sigma_txt, sigma_nota,
     )
+
+
+# --- Contraste de tendencia -------------------------------------------------
+@app.callback(
+    Output("criterios", "children"), Output("veredicto", "children"),
+    Input("store", "data"),
+)
+def _contraste(blob):
+    if not blob:
+        return [], []
+
+    _, limpio, _ = _preparar(blob)
+    if limpio is None or limpio.empty:
+        return [], []
+
+    r = detectar_tendencia(limpio, "temp_c.prom")
+
+    def criterio(cumple, titulo, detalle):
+        return html.Div([
+            html.Div("✓" if cumple else "✕",
+                     className=f"criterio-marca {'marca-si' if cumple else 'marca-no'}"),
+            html.Div([
+                html.Div(titulo, className="criterio-titulo"),
+                html.Div(detalle, className="criterio-detalle"),
+            ], className="criterio-cuerpo"),
+        ], className="criterio")
+
+    bloques = ", ".join(f"{p:+.2f}" for p in r["bloques_pendientes"])
+
+    filas = [
+        criterio(r["supera_umbral"], "Relevancia práctica",
+                 f"pendiente {r['pendiente_dia']:+.3f} °C/día"),
+        criterio(r["significativa_corregida"], "Significancia corregida",
+                 f"t = {r['razon_senal_ruido']:.2f} vs {r['t_critico']:.2f} · "
+                 f"{r['gl_efectivos']:.0f} gl efectivos"),
+        criterio(r["homogenea"], "Homogeneidad entre bloques",
+                 f"CV = {r['cv_bloques']:.2f} · [{bloques}]"),
+    ]
+
+    if r["recomendada"]:
+        veredicto = html.Div([
+            html.B("Deriva confirmada. "),
+            f"El modelo incorpora una pendiente de {r['pendiente_dia']:+.3f} °C/día. "
+            f"La dispersión residual desciende de {r['sigma_sin']:.3f} a "
+            f"{r['sigma_con']:.3f} °C al modelarla.",
+        ], className="veredicto veredicto-si")
+    else:
+        veredicto = html.Div([
+            html.B("Sin deriva sistemática. "),
+            f"{r['motivo'].capitalize()}. ",
+            f"Con ρ = {r['rho_lag1']:.3f}, las {r['n_observaciones']} observaciones "
+            f"equivalen a {r['n_efectivo']:.0f} independientes: la significancia "
+            "nominal resultaría engañosa sin esta corrección.",
+        ], className="veredicto veredicto-no")
+
+    return filas, veredicto
 
 
 # --- Figuras y listas -------------------------------------------------------
@@ -361,7 +443,7 @@ def _figuras(blob):
     if limpio is None or limpio.empty:
         return v, mapa_ini, [], v, v, v, v, [], []
 
-    d = _descomponer(limpio)
+    d, _ = _modelo(limpio)
 
     if d is not None:
         a = autocorrelacion(d.residual, max_rezago=min(288, len(limpio) // 2))
@@ -397,7 +479,7 @@ def _figuras(blob):
     )
 
 
-def _eventos(d, df, huecos, maximo: int = 6):
+def _eventos(d, df, huecos, maximo: int = 8):
     """Registro de sucesos: anomalías agrupadas, reinicios e interrupciones."""
     filas = []
 

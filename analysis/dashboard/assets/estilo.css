@@ -422,6 +422,51 @@ body {
   font-size: 0.74rem; font-weight: 600;
 }
 
+/* --- Panel de contraste de tendencia ------------------------------------ */
+.criterio {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--borde);
+}
+.criterio:last-child { border-bottom: none; }
+
+.criterio-marca {
+  width: 22px; height: 22px; border-radius: 6px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 700;
+}
+.marca-si { background: rgba(45,212,167,0.16); color: var(--verde); }
+.marca-no { background: rgba(251,113,133,0.16); color: var(--rojo); }
+
+.criterio-cuerpo { flex: 1; min-width: 0; }
+.criterio-titulo { font-size: 0.76rem; font-weight: 600; }
+.criterio-detalle {
+  font-family: var(--mono); font-size: 0.63rem;
+  color: var(--texto-bajo); margin-top: 0.15rem;
+}
+
+.veredicto {
+  margin-top: 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--r-sm);
+  font-size: 0.73rem;
+  line-height: 1.55;
+}
+.veredicto-no {
+  background: rgba(34,199,232,0.08);
+  border-left: 3px solid var(--cian);
+  color: var(--texto-med);
+}
+.veredicto-si {
+  background: rgba(251,191,36,0.08);
+  border-left: 3px solid var(--ambar);
+  color: var(--texto-med);
+}
+.veredicto b { color: var(--texto); }
+
 /* --- Pie ---------------------------------------------------------------- */
 .pie-nota {
   margin-top: 1.4rem; padding: 0.85rem 1.1rem;
