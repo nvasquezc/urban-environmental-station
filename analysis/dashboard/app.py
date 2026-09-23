@@ -1,7 +1,7 @@
 """Consola de monitoreo de la estación ambiental urbana.
 
-Vista única: estado del sistema, descomposición de la señal, estructura
-temporal y registro de eventos, sin navegación intermedia.
+Vista única: estado del sistema, zona de emplazamiento, descomposición de la
+señal, estructura temporal y registro de eventos.
 
 Ejecución:
     cd analysis
@@ -9,6 +9,8 @@ Ejecución:
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 import pandas as pd
@@ -29,6 +31,10 @@ DOI = "10.5281/zenodo.22740968"
 REPO = "https://github.com/nvasquezc/urban-environmental-station"
 INTERVALO_MIN = 5
 TZ = "America/Bogota"
+
+# Posición de referencia cuando no hay fijación satelital disponible.
+LAT_DEFECTO = float(os.environ.get("UES_LAT", 4.6097))
+LON_DEFECTO = float(os.environ.get("UES_LON", -74.0817))
 
 app = Dash(__name__, title="UES · Consola", suppress_callback_exceptions=True)
 server = app.server
@@ -54,6 +60,19 @@ def panel(titulo, sub, hijos, cols):
         className="tarjeta", style={"gridColumn": f"span {cols}"})
 
 
+def barra_qc(etiqueta, id_valor, id_relleno, id_nota):
+    """Indicador de barra para el encabezado."""
+    return html.Div([
+        html.Div([
+            html.Span(etiqueta, className="qc-etiqueta"),
+            html.Span(id=id_valor, className="qc-valor"),
+        ], className="qc-fila"),
+        html.Div(html.Div(id=id_relleno, className="qc-relleno"),
+                 className="qc-pista"),
+        html.Div(id=id_nota, className="qc-nota"),
+    ], className="qc-item")
+
+
 app.layout = html.Div([
     dcc.Store(id="store"),
     dcc.Interval(id="reloj", interval=5 * 60 * 1000, n_intervals=0),
@@ -66,6 +85,11 @@ app.layout = html.Div([
                 html.Div("UES", className="logo-marca"),
                 html.Div("Estación", className="logo-texto"),
             ], className="logo"),
+
+            html.Div(
+                html.Div(html.Img(src=app.get_asset_url("logo.png")),
+                         className="emblema"),
+                className="emblema-caja"),
 
             html.Div([
                 html.Div([html.Div(className="nav-punto"), s],
@@ -92,6 +116,14 @@ app.layout = html.Div([
                     html.H1("Monitoreo ambiental urbano"),
                     html.Div(f"Nodo {DEVICE_ID} · Bogotá · UTC−5", className="sub"),
                 ]),
+
+                # Control de calidad en barras
+                html.Div([
+                    barra_qc("Válidos", "qc-val", "qc-val-b", "qc-val-n"),
+                    barra_qc("Completitud", "qc-comp", "qc-comp-b", "qc-comp-n"),
+                    barra_qc("Continuidad", "qc-cont", "qc-cont-b", "qc-cont-n"),
+                ], className="qc-barras"),
+
                 html.Div([
                     html.Span([html.Span(className="pulso"), html.Span(id="origen")],
                               className="chip chip-vivo"),
@@ -111,14 +143,18 @@ app.layout = html.Div([
                 kpi("Varianza explicada", "k-r2", "", "k-r2-nota", "kpi-verde"),
                 kpi("Dispersión residual", "k-sigma", " °C", "k-sigma-nota", "kpi-rosa"),
 
-                # Fila 2 — descomposición + calidad
+                # Fila 2 — descomposición + mapa
                 panel("Descomposición de la señal",
                       "Observado, ciclo diurno ajustado y residual con banda ±2σ",
                       [dcc.Graph(id="g-descomp", config={"displayModeBar": False})], 8),
 
-                panel("Control de calidad",
-                      "Registros que superan los siete criterios del protocolo",
-                      [dcc.Graph(id="g-donut", config={"displayModeBar": False})], 4),
+                panel("Zona de emplazamiento",
+                      "Sector de operación del instrumento",
+                      [html.Div(
+                          dcc.Graph(id="g-mapa", config={"displayModeBar": False,
+                                                         "scrollZoom": False}),
+                          className="mapa-envoltura"),
+                       html.Div(id="mapa-pie", className="mapa-pie")], 4),
 
                 # Fila 3 — ACF + matriz + eventos
                 panel("Persistencia temporal",
@@ -192,6 +228,71 @@ def _descomponer(limpio):
         return None
 
 
+def _ubicacion(df):
+    """Posición del nodo a partir de las fijaciones satelitales disponibles.
+
+    Se toma la mediana de las coordenadas válidas: es robusta frente a los
+    errores de posicionamiento aislados, frecuentes con visibilidad parcial.
+    La posición se emplea únicamente para centrar el mapa; nunca se publica.
+    """
+    if {"gps.lat", "gps.lon"} <= set(df.columns):
+        g = df[["gps.lat", "gps.lon"]].dropna()
+        if "gps.fix" in df.columns:
+            g = g[df["gps.fix"].reindex(g.index).fillna(False).astype(bool)]
+        if not g.empty:
+            return (float(g["gps.lat"].median()),
+                    float(g["gps.lon"].median()),
+                    "Posición por GPS")
+    return LAT_DEFECTO, LON_DEFECTO, "Posición configurada"
+
+
+# --- Barras de calidad ------------------------------------------------------
+@app.callback(
+    Output("qc-val", "children"), Output("qc-val-b", "style"),
+    Output("qc-val-n", "children"),
+    Output("qc-comp", "children"), Output("qc-comp-b", "style"),
+    Output("qc-comp-n", "children"),
+    Output("qc-cont", "children"), Output("qc-cont-b", "style"),
+    Output("qc-cont-n", "children"),
+    Input("store", "data"),
+)
+def _barras(blob):
+    cero = {"width": "0%", "background": "#2A3757"}
+    nada = ("—", cero, "", "—", cero, "", "—", cero, "")
+    if not blob:
+        return nada
+
+    _, limpio, resumen = _preparar(blob)
+    if limpio is None or limpio.empty:
+        return nada
+
+    c = completitud(limpio)
+    huecos = detectar_huecos(limpio)
+
+    def estilo(p):
+        color = "#2DD4A7" if p >= 99 else "#FBBF24" if p >= 90 else "#FB7185"
+        return {"width": f"{min(max(p, 0), 100):.1f}%", "background": color}
+
+    p_val = 100.0 * resumen.n_salida / resumen.n_entrada if resumen.n_entrada else 0
+    p_comp = c["completitud"] * 100
+
+    # Continuidad: fracción de intervalos no afectados por interrupciones.
+    faltantes = int(huecos["intervalos_faltantes"].sum()) if not huecos.empty else 0
+    esperados = max(c["esperados"], 1)
+    p_cont = 100.0 * (esperados - faltantes) / esperados
+
+    return (
+        f"{p_val:.1f}%", estilo(p_val),
+        f"{resumen.n_descartado} descartados",
+
+        f"{p_comp:.1f}%", estilo(p_comp),
+        f"{c['presentes']} intervalos",
+
+        f"{p_cont:.1f}%", estilo(p_cont),
+        ("sin cortes" if huecos.empty else f"{len(huecos)} cortes"),
+    )
+
+
 # --- Indicadores ------------------------------------------------------------
 @app.callback(
     Output("k-tau", "children"), Output("k-tau-nota", "children"),
@@ -243,7 +344,8 @@ def _kpis(blob):
 
 # --- Figuras y listas -------------------------------------------------------
 @app.callback(
-    Output("g-descomp", "figure"), Output("g-donut", "figure"),
+    Output("g-descomp", "figure"), Output("g-mapa", "figure"),
+    Output("mapa-pie", "children"),
     Output("g-acf", "figure"), Output("g-matriz", "figure"),
     Output("g-salud", "figure"), Output("g-hist", "figure"),
     Output("eventos", "children"), Output("tabla", "children"),
@@ -251,12 +353,13 @@ def _kpis(blob):
 )
 def _figuras(blob):
     v = F.fig_vacia()
+    mapa_ini = F.fig_mapa(LAT_DEFECTO, LON_DEFECTO, "Nodo")
     if not blob:
-        return v, v, v, v, v, v, [], []
+        return v, mapa_ini, [], v, v, v, v, [], []
 
     df, limpio, resumen = _preparar(blob)
     if limpio is None or limpio.empty:
-        return v, v, v, v, v, v, [], []
+        return v, mapa_ini, [], v, v, v, v, [], []
 
     d = _descomponer(limpio)
 
@@ -268,12 +371,23 @@ def _figuras(blob):
     else:
         f_desc = f_acf = f_hist = F.fig_vacia("Serie insuficiente")
 
+    lat, lon, fuente = _ubicacion(df)
+
+    # No se publican coordenadas: el emplazamiento se describe de forma
+    # cualitativa para no exponer la posición exacta del instrumento.
+    pie_mapa = [
+        html.Span([html.B("Emplazamiento "), "Bogotá D.C."]),
+        html.Span([html.B("Altitud "), "≈ 2 600 m s. n. m."]),
+        html.Span(fuente),
+    ]
+
     diag = diagnostico_estabilidad(df)
     huecos = detectar_huecos(limpio)
 
     return (
         f_desc,
-        F.fig_donut_calidad(resumen),
+        F.fig_mapa(lat, lon, "Zona de operación"),
+        pie_mapa,
         f_acf,
         F.fig_matriz(matriz_hora_dia(limpio, "temp_c.prom")),
         F.fig_salud(df),
@@ -284,12 +398,7 @@ def _figuras(blob):
 
 
 def _eventos(d, df, huecos, maximo: int = 6):
-    """Registro de sucesos: anomalías agrupadas, reinicios e interrupciones.
-
-    Los residuales consecutivos fuera de banda se agrupan en un solo evento y
-    se reportan por su pico, evitando que una excursión sostenida genere
-    decenas de entradas.
-    """
+    """Registro de sucesos: anomalías agrupadas, reinicios e interrupciones."""
     filas = []
 
     if d is not None:
@@ -374,10 +483,7 @@ def _tabla(diag, huecos):
 
 
 if __name__ == "__main__":
-    import os
-
     # El recargador de Werkzeug falla en Windows al reservar memoria compartida
-    # cuando ya existe una instancia activa. Se desactiva manteniendo el modo
-    # de depuración para conservar los mensajes de error en el navegador.
+    # cuando ya existe una instancia activa.
     app.run(debug=True, use_reloader=False,
             port=int(os.environ.get("PORT", 8050)))

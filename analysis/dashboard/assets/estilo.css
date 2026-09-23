@@ -64,7 +64,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.65rem;
-  margin-bottom: 2.2rem;
+  margin-bottom: 1.3rem;
   padding: 0 0.4rem;
 }
 
@@ -77,6 +77,7 @@ body {
   font-size: 0.82rem;
   font-weight: 700;
   color: #fff;
+  flex-shrink: 0;
 }
 
 .logo-texto {
@@ -84,6 +85,35 @@ body {
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
+}
+
+/* Contenedor circular del logotipo propio.
+   El recorte circular se aplica sobre la imagen, que se escala para cubrir
+   el círculo sin deformarse. */
+.emblema-caja {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.8rem;
+}
+
+.emblema {
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #FFFFFF;
+  border: 2px solid var(--borde);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  flex-shrink: 0;
+  display: block;
+}
+
+.emblema img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
 }
 
 .nav-item {
@@ -126,6 +156,7 @@ body {
   background: linear-gradient(135deg, var(--verde) 0%, var(--cian) 100%);
   display: flex; align-items: center; justify-content: center;
   font-family: var(--mono); font-size: 0.72rem; font-weight: 700; color: #08131F;
+  flex-shrink: 0;
 }
 
 .perfil-nombre { font-size: 0.78rem; font-weight: 600; }
@@ -136,20 +167,31 @@ body {
 
 /* --- Encabezado --------------------------------------------------------- */
 .encabezado {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 1.4rem; gap: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.4rem;
+  gap: 1.6rem;
+  flex-wrap: nowrap;
 }
+
+.encabezado > div:first-child { flex-shrink: 0; }
 
 .encabezado h1 {
   font-size: 1.32rem; font-weight: 700; margin: 0; letter-spacing: -0.015em;
+  white-space: nowrap;
 }
 .encabezado .sub {
   font-family: var(--mono); font-size: 0.66rem;
   color: var(--texto-bajo); letter-spacing: 0.08em;
   text-transform: uppercase; margin-top: 0.22rem;
+  white-space: nowrap;
 }
 
-.chips { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.chips {
+  display: flex; align-items: center; gap: 0.6rem;
+  flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0;
+}
 
 .chip {
   font-family: var(--mono); font-size: 0.64rem;
@@ -174,6 +216,73 @@ body {
   100% { box-shadow: 0 0 0 0 rgba(45,212,167,0); }
 }
 
+/* --- Barras de calidad en el encabezado --------------------------------- */
+.qc-barras {
+  display: flex;
+  gap: 1.4rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 540px;
+  padding: 0.65rem 1.05rem;
+  background: var(--panel);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-sm);
+  align-self: center;
+}
+
+.qc-item { flex: 1; min-width: 0; }
+
+.qc-fila {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-bottom: 0.32rem;
+}
+
+.qc-etiqueta {
+  font-family: var(--mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--texto-bajo);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qc-valor {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--texto);
+  white-space: nowrap;
+}
+
+.qc-pista {
+  height: 5px;
+  background: rgba(42,55,87,0.85);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.qc-relleno {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.qc-nota {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  color: var(--texto-bajo);
+  margin-top: 0.28rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* --- Rejilla ------------------------------------------------------------ */
 .rejilla { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1.05rem; }
 
@@ -193,6 +302,23 @@ body {
   font-size: 0.7rem; color: var(--texto-bajo);
   margin-bottom: 0.9rem; line-height: 1.45;
 }
+
+/* --- Mapa --------------------------------------------------------------- */
+.mapa-envoltura { border-radius: var(--r-sm); overflow: hidden; }
+
+.mapa-pie {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--borde);
+  font-family: var(--mono);
+  font-size: 0.63rem;
+  color: var(--texto-bajo);
+  flex-wrap: wrap;
+}
+.mapa-pie b { color: var(--texto-med); font-weight: 600; }
 
 /* --- Tarjetas de indicador --------------------------------------------- */
 .kpi {

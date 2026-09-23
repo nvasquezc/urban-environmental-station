@@ -33,6 +33,10 @@ TEXTO_MED = "#93A3C4"
 TEXTO_BAJO = "#64749A"
 REJILLA = "rgba(42,55,87,0.55)"
 
+# Plotly sustituyó las trazas Mapbox por trazas MapLibre a partir de 5.24.
+# Se detecta la disponibilidad para mantener compatibilidad en ambas ramas.
+_MAPLIBRE = hasattr(go, "Scattermap")
+
 BASE = {
     "template": "plotly_dark",
     "paper_bgcolor": "rgba(0,0,0,0)",
@@ -92,6 +96,59 @@ def fig_vacia(mensaje: str = "Sin datos") -> go.Figure:
     return fig
 
 
+# --- Mapa de ubicación ------------------------------------------------------
+def fig_mapa(lat: float, lon: float, etiqueta: str = "Nodo",
+             zoom: float = 11.2, alto: int = 372) -> go.Figure:
+    """Zona de emplazamiento del nodo sobre cartografía clara.
+
+    El nivel de acercamiento se mantiene deliberadamente bajo: la figura
+    comunica el sector de la ciudad donde opera el instrumento, sin permitir
+    su localización precisa. Las coordenadas no se rotulan.
+
+    Se emplea el estilo `carto-positron`, que no requiere credencial de
+    proveedor. Las teselas se descargan en línea; sin conexión el marcador
+    sigue siendo visible sobre fondo neutro.
+    """
+    capas = [
+        dict(size=54, color="rgba(124,108,246,0.14)"),
+        dict(size=30, color="rgba(124,108,246,0.34)"),
+        dict(size=13, color=VIOLETA),
+    ]
+
+    fig = go.Figure()
+    traza = go.Scattermap if _MAPLIBRE else go.Scattermapbox
+
+    for i, capa in enumerate(capas):
+        final = i == len(capas) - 1
+        fig.add_trace(traza(
+            lat=[lat], lon=[lon], mode="markers",
+            marker={"size": capa["size"], "color": capa["color"]},
+            hoverinfo="text" if final else "skip",
+            hovertext=etiqueta if final else None,
+            showlegend=False,
+        ))
+
+    ajuste = {
+        "style": "carto-positron",
+        "center": {"lat": lat, "lon": lon},
+        "zoom": zoom,
+    }
+    if _MAPLIBRE:
+        fig.update_layout(map=ajuste)
+    else:
+        fig.update_layout(mapbox=ajuste)
+
+    fig.update_layout(
+        height=alto,
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=BASE["font"],
+        hoverlabel=BASE["hoverlabel"],
+        showlegend=False,
+    )
+    return fig
+
+
 # --- Descomposición ---------------------------------------------------------
 def fig_descomposicion(d: Descomposicion, unidad: str = "°C") -> go.Figure:
     """Observado, ciclo diurno ajustado y residual con banda de tolerancia."""
@@ -105,11 +162,9 @@ def fig_descomposicion(d: Descomposicion, unidad: str = "°C") -> go.Figure:
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.06, row_heights=[0.68, 0.32])
 
-    # Banda ±2σ alrededor del ciclo
     _degradado(fig, t, b_sup, b_inf, (45, 212, 167),
                capas=4, alpha_max=0.16, row=1, col=1)
 
-    # Relleno bajo la curva observada
     piso = np.full(len(t), obs.min() - 0.6)
     _degradado(fig, t, obs, piso, (124, 108, 246),
                capas=6, alpha_max=0.26, row=1, col=1)
@@ -193,7 +248,11 @@ def fig_acf(acf: pd.DataFrame, td: dict, intervalo_min: int = 5) -> go.Figure:
 
 # --- Donut de calidad -------------------------------------------------------
 def fig_donut_calidad(resumen) -> go.Figure:
-    """Proporción de registros aceptados, con el porcentaje al centro."""
+    """Proporción de registros aceptados, con el porcentaje al centro.
+
+    Conservada para uso en exportaciones; el tablero presenta esta información
+    como barras en el encabezado.
+    """
     ok = resumen.n_salida
     desc = max(resumen.n_descartado, 0)
     pct = 100.0 * ok / resumen.n_entrada if resumen.n_entrada else 0.0

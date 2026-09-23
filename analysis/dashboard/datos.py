@@ -17,6 +17,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from dotenv import load_dotenv
+
+# Carga variables desde analysis/.env si el archivo existe.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+
 RAIZ = Path(__file__).resolve().parents[2]
 CACHE = Path(__file__).resolve().parent / "cache" / "ultimo.parquet"
 
