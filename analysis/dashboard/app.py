@@ -1,13 +1,16 @@
 """Consola de monitoreo de la estación ambiental urbana.
 
-Vista única: estado del sistema, zona de emplazamiento, descomposición de la
-señal, estructura temporal y registro de eventos.
+Dos vistas seleccionables desde la barra lateral: el resumen operativo, que
+recoge el estado del sistema y el diagnóstico de la señal, y el pronóstico,
+que aloja la capa predictiva junto a las recomendaciones que de ella derivan.
+
+La separación responde a que ambas responden preguntas distintas: la primera,
+qué está ocurriendo; la segunda, qué cabe esperar y qué conviene hacer.
 
 El modelo de descomposición incorpora un término de tendencia únicamente
 cuando el contraste de `detectar_tendencia` lo confirma. Los indicadores
-derivados —dispersión residual y tiempo de decorrelación— dependen de esa
-decisión, de modo que el panel de contraste no es informativo sino
-constitutivo: documenta por qué los valores mostrados son los que son.
+derivados dependen de esa decisión, de modo que el panel de contraste no es
+informativo sino constitutivo: documenta por qué los valores son los que son.
 
 Ejecución:
     cd analysis
@@ -20,7 +23,7 @@ import os
 
 import numpy as np
 import pandas as pd
-from dash import Dash, Input, Output, dcc, html
+from dash import ALL, Dash, Input, Output, ctx, dcc, html
 
 from dashboard import figuras as F
 from dashboard.datos import DEVICE_ID, cargar, deserializar, serializar
@@ -32,11 +35,13 @@ from uestation.decompose import (
     matriz_hora_dia,
     tiempo_decorrelacion,
 )
+from uestation.forecast import predecir, prescribir
 from uestation.qc import aplicar_qc, completitud, detectar_huecos, diagnostico_estabilidad
 
 DOI = "10.5281/zenodo.22740968"
 REPO = "https://github.com/nvasquezc/urban-environmental-station"
 INTERVALO_MIN = 5
+HORAS_PRONOSTICO = 24.0
 TZ = "America/Bogota"
 
 # Posición de referencia cuando no hay fijación satelital disponible.
@@ -46,10 +51,15 @@ LON_DEFECTO = float(os.environ.get("UES_LON", -74.0817))
 app = Dash(__name__, title="UES · Consola", suppress_callback_exceptions=True)
 server = app.server
 
-SECCIONES = ["Resumen", "Señal", "Temporal", "Instrumento", "Calidad"]
+VISTAS = [("resumen", "Resumen"), ("pronostico", "Pronóstico")]
+
+TITULOS = {
+    "resumen": "Monitoreo ambiental urbano",
+    "pronostico": "Pronóstico y recomendaciones",
+}
 
 
-def kpi(rotulo, id_cifra, unidad, id_nota, clase):
+def kpi(rotulo, id_cifra, unidad, id_nota, clase, cols=3):
     return html.Div([
         html.Div(rotulo, className="kpi-rotulo"),
         html.Div([
@@ -57,7 +67,7 @@ def kpi(rotulo, id_cifra, unidad, id_nota, clase):
             html.Span(unidad, className="kpi-unidad"),
         ], className="kpi-cifra"),
         html.Div(id=id_nota, className="kpi-nota"),
-    ], className=f"kpi {clase}", style={"gridColumn": "span 3"})
+    ], className=f"kpi {clase}", style={"gridColumn": f"span {cols}"})
 
 
 def panel(titulo, sub, hijos, cols):
@@ -80,8 +90,22 @@ def barra_qc(etiqueta, id_valor, id_relleno, id_nota):
     ], className="qc-item")
 
 
+def botones_nav(activa: str) -> list:
+    """Reconstruye la barra de navegación marcando la vista en curso."""
+    return [
+        html.Button(
+            [html.Div(className="nav-punto"), etiqueta],
+            id={"tipo": "nav", "vista": clave},
+            className="nav-item activo" if clave == activa else "nav-item",
+            n_clicks=0,
+        )
+        for clave, etiqueta in VISTAS
+    ]
+
+
 app.layout = html.Div([
     dcc.Store(id="store"),
+    dcc.Store(id="vista", data="resumen"),
     dcc.Interval(id="reloj", interval=5 * 60 * 1000, n_intervals=0),
 
     html.Div([
@@ -98,11 +122,7 @@ app.layout = html.Div([
                          className="emblema"),
                 className="emblema-caja"),
 
-            html.Div([
-                html.Div([html.Div(className="nav-punto"), s],
-                         className="nav-item activo" if i == 0 else "nav-item")
-                for i, s in enumerate(SECCIONES)
-            ]),
+            html.Div(botones_nav("resumen"), id="nav"),
 
             html.Div([
                 html.Div([
@@ -120,7 +140,7 @@ app.layout = html.Div([
 
             html.Div([
                 html.Div([
-                    html.H1("Monitoreo ambiental urbano"),
+                    html.H1(TITULOS["resumen"], id="titulo-vista"),
                     html.Div(f"Nodo {DEVICE_ID} · Bogotá · UTC−5", className="sub"),
                 ]),
 
@@ -141,69 +161,9 @@ app.layout = html.Div([
                 ], className="chips"),
             ], className="encabezado"),
 
-            html.Div([
+            html.Div(id="contenido"),
 
-                # Fila 1 — indicadores
-                kpi("Decorrelación", "k-tau", " min", "k-tau-nota", "kpi-violeta"),
-                kpi("Registros válidos", "k-n", "", "k-n-nota", "kpi-cian"),
-                kpi("Varianza explicada", "k-r2", "", "k-r2-nota", "kpi-verde"),
-                kpi("Dispersión residual", "k-sigma", " °C", "k-sigma-nota", "kpi-rosa"),
-
-                # Fila 2 — descomposición + mapa
-                panel("Descomposición de la señal",
-                      "Observado, componente determinista y residual con banda ±2σ",
-                      [dcc.Graph(id="g-descomp", config={"displayModeBar": False})], 8),
-
-                panel("Zona de emplazamiento",
-                      "Sector de operación del instrumento",
-                      [html.Div(
-                          dcc.Graph(id="g-mapa", config={"displayModeBar": False,
-                                                         "scrollZoom": False}),
-                          className="mapa-envoltura"),
-                       html.Div(id="mapa-pie", className="mapa-pie")], 4),
-
-                # Fila 3 — ACF + matriz + contraste de tendencia
-                panel("Persistencia temporal",
-                      "Autocorrelación del residual y tiempo de decorrelación",
-                      [dcc.Graph(id="g-acf", config={"displayModeBar": False})], 4),
-
-                panel("Patrón hora × día",
-                      "Temperatura media por hora local y fecha",
-                      [dcc.Graph(id="g-matriz", config={"displayModeBar": False})], 4),
-
-                panel("Contraste de tendencia",
-                      "Tres criterios deciden si el modelo incorpora deriva",
-                      [html.Div(id="criterios"),
-                       html.Div(id="veredicto")], 4),
-
-                # Fila 4 — salud + histograma + eventos
-                panel("Estabilidad del nodo",
-                      "Memoria libre y completitud del muestreo",
-                      [dcc.Graph(id="g-salud", config={"displayModeBar": False})], 5),
-
-                panel("Distribución del residual",
-                      "Histograma con densidad normal de referencia",
-                      [dcc.Graph(id="g-hist", config={"displayModeBar": False})], 4),
-
-                panel("Diagnóstico",
-                      "Indicadores del instrumento",
-                      [html.Table(html.Tbody(id="tabla"), className="tabla")], 3),
-
-                # Fila 5 — eventos
-                panel("Eventos recientes",
-                      "Anomalías y sucesos del sistema",
-                      [html.Div(id="eventos")], 12),
-
-            ], className="rejilla"),
-
-            html.Div([
-                html.B("Alcance. "),
-                "Lecturas sin corrección por calibración. La incertidumbre reportada "
-                "recoge solo la dispersión intra-intervalo y constituye una cota "
-                "inferior: la componente de calibración permanece indeterminada hasta "
-                "completar la co-ubicación con una referencia trazable. No apto para "
-                "uso normativo.",
-            ], className="pie-nota"),
+            html.Div(id="nota-alcance", className="pie-nota"),
 
             html.Div([
                 html.Span("Vásquez Castro, N. O. (2026) · Jitter Ingeniería SAS / "
@@ -217,7 +177,28 @@ app.layout = html.Div([
 ])
 
 
-# --- Datos ------------------------------------------------------------------
+# ============================================================================
+#  Navegación
+# ============================================================================
+@app.callback(
+    Output("vista", "data"),
+    Output("nav", "children"),
+    Output("titulo-vista", "children"),
+    Input({"tipo": "nav", "vista": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def _navegar(_clicks):
+    """Selecciona la vista activa a partir del último botón pulsado."""
+    activa = "resumen"
+    if ctx.triggered_id and isinstance(ctx.triggered_id, dict):
+        activa = ctx.triggered_id.get("vista", "resumen")
+
+    return activa, botones_nav(activa), TITULOS[activa]
+
+
+# ============================================================================
+#  Datos
+# ============================================================================
 @app.callback(Output("store", "data"), Output("origen", "children"),
               Input("reloj", "n_intervals"))
 def _cargar(_):
@@ -268,7 +249,102 @@ def _ubicacion(df):
     return LAT_DEFECTO, LON_DEFECTO, "Posición configurada"
 
 
-# --- Barras de calidad ------------------------------------------------------
+# ============================================================================
+#  Composición de vistas
+# ============================================================================
+@app.callback(Output("contenido", "children"), Output("nota-alcance", "children"),
+              Input("vista", "data"))
+def _vista(vista):
+    alcance_comun = [
+        html.B("Alcance. "),
+        "Lecturas sin corrección por calibración. La incertidumbre reportada "
+        "recoge solo la dispersión intra-intervalo y constituye una cota "
+        "inferior: la componente de calibración permanece indeterminada hasta "
+        "completar la co-ubicación con una referencia trazable. No apto para "
+        "uso normativo.",
+    ]
+
+    if vista == "pronostico":
+        contenido = html.Div([
+            kpi("Error medio", "p-mae", " °C", "p-mae-nota", "kpi-violeta"),
+            kpi("Destreza", "p-destreza", "", "p-destreza-nota", "kpi-cian"),
+            kpi("Cobertura", "p-cobertura", " %", "p-cobertura-nota", "kpi-verde"),
+            kpi("Horizonte útil", "p-tau", " min", "p-tau-nota", "kpi-ambar"),
+
+            panel("Pronóstico a 24 horas",
+                  "Proyección del ciclo estimado con banda de predicción al 95 %",
+                  [dcc.Graph(id="g-pred", config={"displayModeBar": False}),
+                   html.Div(id="advertencias")], 7),
+
+            panel("Recomendaciones operativas",
+                  "Acciones derivadas del estado observado, por prioridad",
+                  [html.Div(id="recomendaciones")], 5),
+        ], className="rejilla")
+
+        alcance = [
+            html.B("Alcance. "),
+            "El pronóstico proyecta el ciclo diurno estimado a partir del registro "
+            "propio y no incorpora información meteorológica externa. Su validez "
+            "está acotada por el tiempo de decorrelación del residual: más allá de "
+            "ese horizonte converge al comportamiento climatológico del período. "
+            "Las métricas provienen de validación sobre datos excluidos del ajuste.",
+        ]
+        return contenido, alcance
+
+    # Vista de resumen
+    contenido = html.Div([
+        kpi("Decorrelación", "k-tau", " min", "k-tau-nota", "kpi-violeta"),
+        kpi("Registros válidos", "k-n", "", "k-n-nota", "kpi-cian"),
+        kpi("Varianza explicada", "k-r2", "", "k-r2-nota", "kpi-verde"),
+        kpi("Dispersión residual", "k-sigma", " °C", "k-sigma-nota", "kpi-rosa"),
+
+        panel("Descomposición de la señal",
+              "Observado, componente determinista y residual con banda ±2σ",
+              [dcc.Graph(id="g-descomp", config={"displayModeBar": False})], 8),
+
+        panel("Zona de emplazamiento",
+              "Sector de operación del instrumento",
+              [html.Div(
+                  dcc.Graph(id="g-mapa", config={"displayModeBar": False,
+                                                 "scrollZoom": False}),
+                  className="mapa-envoltura"),
+               html.Div(id="mapa-pie", className="mapa-pie")], 4),
+
+        panel("Persistencia temporal",
+              "Autocorrelación del residual y tiempo de decorrelación",
+              [dcc.Graph(id="g-acf", config={"displayModeBar": False})], 4),
+
+        panel("Patrón hora × día",
+              "Temperatura media por hora local y fecha",
+              [dcc.Graph(id="g-matriz", config={"displayModeBar": False})], 4),
+
+        panel("Contraste de tendencia",
+              "Tres criterios deciden si el modelo incorpora deriva",
+              [html.Div(id="criterios"), html.Div(id="veredicto")], 4),
+
+        panel("Estabilidad del nodo",
+              "Memoria libre y completitud del muestreo",
+              [dcc.Graph(id="g-salud", config={"displayModeBar": False})], 5),
+
+        panel("Distribución del residual",
+              "Histograma con densidad normal de referencia",
+              [dcc.Graph(id="g-hist", config={"displayModeBar": False})], 4),
+
+        panel("Diagnóstico",
+              "Indicadores del instrumento",
+              [html.Table(html.Tbody(id="tabla"), className="tabla")], 3),
+
+        panel("Eventos recientes",
+              "Anomalías y sucesos del sistema",
+              [html.Div(id="eventos")], 12),
+    ], className="rejilla")
+
+    return contenido, alcance_comun
+
+
+# ============================================================================
+#  Barras de calidad (comunes a ambas vistas)
+# ============================================================================
 @app.callback(
     Output("qc-val", "children"), Output("qc-val-b", "style"),
     Output("qc-val-n", "children"),
@@ -304,18 +380,16 @@ def _barras(blob):
     p_cont = 100.0 * (esperados - faltantes) / esperados
 
     return (
-        f"{p_val:.1f}%", estilo(p_val),
-        f"{resumen.n_descartado} descartados",
-
-        f"{p_comp:.1f}%", estilo(p_comp),
-        f"{c['presentes']} intervalos",
-
+        f"{p_val:.1f}%", estilo(p_val), f"{resumen.n_descartado} descartados",
+        f"{p_comp:.1f}%", estilo(p_comp), f"{c['presentes']} intervalos",
         f"{p_cont:.1f}%", estilo(p_cont),
         ("sin cortes" if huecos.empty else f"{len(huecos)} cortes"),
     )
 
 
-# --- Indicadores ------------------------------------------------------------
+# ============================================================================
+#  Vista: resumen
+# ============================================================================
 @app.callback(
     Output("k-tau", "children"), Output("k-tau-nota", "children"),
     Output("k-n", "children"), Output("k-n-nota", "children"),
@@ -329,17 +403,17 @@ def _kpis(blob):
     if not blob:
         return nada
 
-    _, limpio, resumen = _preparar(blob)
+    _, limpio, _ = _preparar(blob)
     if limpio is None or limpio.empty:
         return nada
 
     c = completitud(limpio)
     u = incertidumbre_expandida(limpio)
-    d, contraste = _modelo(limpio)
+    d, _ = _modelo(limpio)
 
     tau_txt, tau_nota = g, ""
     if d is not None:
-        a = autocorrelacion(d.residual, max_rezago=min(288, len(limpio) // 2))
+        a = autocorrelacion(d.residual, max_rezago=min(576, len(limpio) // 2))
         tau = tiempo_decorrelacion(a).get("minutos", np.nan)
         if np.isfinite(tau):
             tau_txt = f"{tau:.0f}"
@@ -368,7 +442,6 @@ def _kpis(blob):
     )
 
 
-# --- Contraste de tendencia -------------------------------------------------
 @app.callback(
     Output("criterios", "children"), Output("veredicto", "children"),
     Input("store", "data"),
@@ -424,7 +497,6 @@ def _contraste(blob):
     return filas, veredicto
 
 
-# --- Figuras y listas -------------------------------------------------------
 @app.callback(
     Output("g-descomp", "figure"), Output("g-mapa", "figure"),
     Output("mapa-pie", "children"),
@@ -439,14 +511,14 @@ def _figuras(blob):
     if not blob:
         return v, mapa_ini, [], v, v, v, v, [], []
 
-    df, limpio, resumen = _preparar(blob)
+    df, limpio, _ = _preparar(blob)
     if limpio is None or limpio.empty:
         return v, mapa_ini, [], v, v, v, v, [], []
 
     d, _ = _modelo(limpio)
 
     if d is not None:
-        a = autocorrelacion(d.residual, max_rezago=min(288, len(limpio) // 2))
+        a = autocorrelacion(d.residual, max_rezago=min(576, len(limpio) // 2))
         f_desc = F.fig_descomposicion(d)
         f_acf = F.fig_acf(a, tiempo_decorrelacion(a), INTERVALO_MIN)
         f_hist = F.fig_histograma_residual(d)
@@ -479,6 +551,120 @@ def _figuras(blob):
     )
 
 
+# ============================================================================
+#  Vista: pronóstico
+# ============================================================================
+@app.callback(
+    Output("p-mae", "children"), Output("p-mae-nota", "children"),
+    Output("p-destreza", "children"), Output("p-destreza-nota", "children"),
+    Output("p-cobertura", "children"), Output("p-cobertura-nota", "children"),
+    Output("p-tau", "children"), Output("p-tau-nota", "children"),
+    Output("g-pred", "figure"), Output("advertencias", "children"),
+    Input("store", "data"),
+)
+def _pronostico(blob):
+    g = "—"
+    nada = (g, "", g, "", g, "", g, "", F.fig_vacia(), [])
+    if not blob:
+        return nada
+
+    _, limpio, _ = _preparar(blob)
+    if limpio is None or limpio.empty:
+        return nada
+
+    d, _ = _modelo(limpio)
+    pred = predecir(limpio, horas=HORAS_PRONOSTICO, intervalo_min=INTERVALO_MIN)
+
+    if d is None or pred is None:
+        return (g, "", g, "", g, "", g, "",
+                F.fig_vacia("Serie insuficiente para pronosticar"), [])
+
+    v = pred.validacion
+    if v is None:
+        mae_txt = destreza_txt = cob_txt = g
+        mae_nota = destreza_nota = cob_nota = "validación no disponible"
+    else:
+        mae_txt = f"{v.mae:.2f}"
+        mae_nota = f"fuera de muestra · n = {v.n} · sesgo {v.sesgo:+.2f} °C"
+
+        destreza_txt = f"{v.destreza:+.2f}"
+        if v.destreza > 0.5:
+            juicio = "mejora sustancial sobre la climatología"
+        elif v.destreza > 0:
+            juicio = "mejora marginal sobre la climatología"
+        else:
+            juicio = "no supera a predecir la media del período"
+        destreza_nota = [html.B(f"{v.mae_climatologia:.2f} °C "), juicio]
+
+        cob_txt = f"{v.cobertura * 100:.0f}"
+        desv = v.cobertura - v.cobertura_nominal
+        if abs(desv) < 0.05:
+            cob_nota = f"acorde al {v.cobertura_nominal:.0%} nominal"
+        elif desv < 0:
+            cob_nota = [html.B("Subestima "),
+                        f"la incertidumbre ({v.cobertura_nominal:.0%} nominal)"]
+        else:
+            cob_nota = [html.B("Sobreestima "),
+                        f"la incertidumbre ({v.cobertura_nominal:.0%} nominal)"]
+
+    if np.isfinite(pred.tau_min):
+        tau_txt = f"{pred.tau_min:.0f}"
+        tau_nota = ["más allá converge al ", html.B("ciclo climatológico")]
+    else:
+        tau_txt, tau_nota = g, ""
+
+    avisos = [
+        html.Div([html.Span("!", className="advertencia-icono"), html.Span(a)],
+                 className="advertencia")
+        for a in pred.advertencias
+    ]
+
+    return (mae_txt, mae_nota, destreza_txt, destreza_nota,
+            cob_txt, cob_nota, tau_txt, tau_nota,
+            F.fig_prediccion(d, pred), avisos)
+
+
+@app.callback(Output("recomendaciones", "children"), Input("store", "data"))
+def _recomendaciones(blob):
+    if not blob:
+        return []
+
+    df, limpio, resumen = _preparar(blob)
+    if limpio is None or limpio.empty:
+        return []
+
+    _, contraste = _modelo(limpio)
+    pred = predecir(limpio, horas=HORAS_PRONOSTICO, intervalo_min=INTERVALO_MIN)
+    diag = diagnostico_estabilidad(df)
+
+    recs = prescribir(df, limpio, diag, resumen, pred, contraste,
+                      intervalo_min=INTERVALO_MIN)
+
+    if not recs:
+        return html.Div("Sin acciones pendientes", className="sin-eventos")
+
+    color_magnitud = {"alta": "malo", "media": "alerta", "baja": "ok"}
+
+    return [
+        html.Div([
+            html.Div(className=f"rec-prioridad pri-{r.prioridad}"),
+            html.Div([
+                html.Div([
+                    html.Div(r.titulo, className="rec-titulo"),
+                    html.Div(r.magnitud,
+                             className=f"rec-magnitud {color_magnitud[r.prioridad]}"),
+                ], className="rec-encabezado"),
+                html.Div(r.detalle, className="rec-detalle"),
+                html.Div(r.categoria, className=f"rec-categoria cat-{r.categoria}"),
+            ], className="rec-cuerpo"),
+        ], className="recomendacion")
+        for r in recs
+    ]
+
+
+# ============================================================================
+#  Auxiliares de composición
+# ============================================================================
 def _eventos(d, df, huecos, maximo: int = 8):
     """Registro de sucesos: anomalías agrupadas, reinicios e interrupciones."""
     filas = []

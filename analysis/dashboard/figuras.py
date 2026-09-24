@@ -365,3 +365,64 @@ def fig_salud(df: pd.DataFrame) -> go.Figure:
                      secondary_y=False)
     fig.update_yaxes(showgrid=False, color=TEXTO_BAJO, secondary_y=True)
     return fig
+# --- Pronóstico -------------------------------------------------------------
+def fig_prediccion(d: Descomposicion, pred, horas_contexto: float = 48.0,
+                   unidad: str = "°C") -> go.Figure:
+    """Serie observada reciente y pronóstico con banda de incertidumbre.
+
+    Se muestra únicamente el tramo final de la serie observada: el contexto
+    relevante para juzgar un pronóstico es el estado inmediatamente anterior,
+    no la historia completa. La discontinuidad entre ambos tramos se marca
+    explícitamente para que no se confundan observación y predicción.
+    """
+    if pred is None:
+        return fig_vacia("Serie insuficiente para pronosticar")
+
+    t_obs = d.tiempo.dt.tz_convert(TZ)
+    obs = d.observado.to_numpy(dtype=float)
+
+    corte = t_obs.iloc[-1] - pd.Timedelta(hours=horas_contexto)
+    mask = (t_obs >= corte).to_numpy()
+    t_ctx = t_obs[mask].to_numpy()
+    y_ctx = obs[mask]
+
+    t_pred = pred.tiempo.dt.tz_convert(TZ).to_numpy()
+
+    fig = go.Figure()
+
+    # Banda de predicción
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([t_pred, t_pred[::-1]]),
+        y=np.concatenate([pred.superior, pred.inferior[::-1]]),
+        fill="toself", fillcolor="rgba(251,191,36,0.13)",
+        line={"width": 0}, hoverinfo="skip",
+        name="IP 95 %"))
+
+
+    # Observado reciente
+    fig.add_trace(go.Scatter(
+        x=t_ctx, y=y_ctx, mode="lines", name="Observado",
+        line={"color": VIOLETA, "width": 2, "shape": "spline", "smoothing": 0.4},
+        hovertemplate="%{y:.2f} " + unidad + "<extra>observado</extra>"))
+
+    # Pronóstico
+    fig.add_trace(go.Scatter(
+        x=t_pred, y=pred.esperado, mode="lines", name="Pronóstico",
+        line={"color": AMBAR, "width": 2.2, "dash": "dash"},
+        hovertemplate="%{y:.2f} " + unidad + "<extra>pronóstico</extra>"))
+
+    # Frontera entre observación y predicción
+    fig.add_vline(x=t_obs.iloc[-1], line={"color": "rgba(147,163,196,0.45)",
+                                          "dash": "dot", "width": 1.4},
+                  annotation_text="ahora", annotation_position="top",
+                  annotation_font={"size": 10, "color": TEXTO_MED})
+
+    fig.update_layout(
+        showlegend=True,
+        legend={"orientation": "h", "y": 1.14, "x": 0,
+                "bgcolor": "rgba(0,0,0,0)", "font": {"size": 10}},
+        margin={"l": 48, "r": 18, "t": 32, "b": 34},
+        **_sin_margen(290))
+    _ejes(fig)
+    fig.update_yaxes(title_text=unidad, title_font_size=10)
+    return fig
