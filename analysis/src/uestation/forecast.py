@@ -1,27 +1,34 @@
+"""Predicción con persistencia de régimen y prescripción operativa.
 
-"""Predicción del ciclo diurno y prescripción operativa.
+El modelo descompone la evolución futura en tres componentes, cada una con
+su propia escala temporal medida sobre el registro:
 
-El modelo armónico ajustado en `decompose` es, por construcción, un predictor:
-evaluado en instantes futuros devuelve el valor esperado de la variable. Este
-módulo formaliza ese uso y, sobre todo, lo somete a validación fuera de
-muestra.
+    ŷ(t+Δ) = c(t+Δ) + s_t · ρ^(Δ/24 h) + i_t · exp(−Δ/τ)
 
-Dos advertencias gobiernan el diseño:
+    c    ciclo diurno ajustado (más tendencia, si el contraste la confirma)
+    s_t  nivel del régimen sinóptico vigente: media del residual en las
+         últimas 24 h
+    ρ    persistencia entre jornadas: correlación de medias diarias
+         consecutivas
+    i_t  anomalía intradiaria presente: último residual menos s_t
+    τ    tiempo de decorrelación de la componente intradiaria
 
-1. **El horizonte útil está acotado por la física del proceso.** Más allá del
-   tiempo de decorrelación, el residual no aporta información y la predicción
-   converge al ciclo climatológico. Anunciar precisión más allá de ese
-   horizonte sería una afirmación sin respaldo.
+La varianza del error crece con el horizonte desde cero hasta la varianza
+residual total, de modo que la banda de predicción se ensancha a medida que
+el estado presente pierde capacidad informativa:
 
-2. **La validación debe ser temporal, nunca aleatoria.** Con observaciones
-   fuertemente autocorreladas, una partición al azar sitúa puntos casi
-   idénticos a ambos lados y produce métricas optimistas que no se sostienen
-   en operación.
+    σ²(Δ) = σ²_i · (1 − e^(−2Δ/τ)) + σ²_s · (1 − ρ^(2Δ/24 h))
+
+Todos los parámetros se estiman exclusivamente con datos anteriores al origen
+del pronóstico. La validación emplea origen móvil: se pronostican varias
+ventanas sucesivas, cada una con parámetros reestimados sobre su propio
+pasado, y el desempeño se compara contra dos referencias —la media
+climatológica y el ciclo diurno sin persistencia— para aislar el aporte de
+cada componente.
 
 La capa prescriptiva deriva recomendaciones operativas sobre el propio
-instrumento —cadencia de transmisión, necesidad de intervención— y no sobre
-el fenómeno observado: prescribir sobre el ambiente excede lo que un nodo sin
-calibrar puede sustentar.
+instrumento y no sobre el fenómeno observado: prescribir sobre el ambiente
+excede lo que un nodo sin calibrar puede sustentar.
 """
 
 from __future__ import annotations
@@ -32,63 +39,88 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from uestation.decompose import (
-    ajustar_ciclo_diurno,
-    autocorrelacion,
-    detectar_tendencia,
-    tiempo_decorrelacion,
-)
+from uestation.decompose import ajustar_ciclo_diurno, detectar_tendencia
+from uestation.escalas import separar_escalas
 
 TZ_LOCAL = "America/Bogota"
 INTERVALO_MIN_DEFECTO = 5
 
+# La persistencia se acota para que el régimen siempre se disipe con el
+# horizonte. Valores negativos carecen de interpretación como amortiguamiento.
+RHO_MAXIMO = 0.95
+
 
 # ============================================================================
-#  Predicción
+#  Estructuras
 # ============================================================================
 @dataclass
+class Estado:
+    """Parámetros y condición inicial, estimados solo con el pasado."""
+
+    tau_intradiario_min: float
+    rho_diario: float
+    var_intradiaria: float
+    var_sinoptica: float
+    nivel_sinoptico: float
+    anomalia_intradiaria: float
+
+
+@dataclass
 class Validacion:
-    """Desempeño del modelo sobre un período no empleado en el ajuste."""
+    """Desempeño sobre ventanas excluidas del ajuste."""
 
     n: int
+    n_origenes: int
     mae: float
     rmse: float
     sesgo: float
-    cobertura: float          # fracción dentro del intervalo de predicción
+    cobertura: float
     cobertura_nominal: float
     horizonte_h: float
-    mae_climatologia: float   # referencia: predecir con la media del período
-    destreza: float           # 1 − MAE_modelo / MAE_referencia
+    mae_climatologia: float
+    mae_ciclo: float
+    destreza: float            # 1 − MAE / MAE_climatología
+    destreza_vs_ciclo: float   # 1 − MAE / MAE_ciclo: aporte de la persistencia
+    mae_por_horizonte: dict[str, float] = field(default_factory=dict)
 
     @property
     def supera_referencia(self) -> bool:
-        """El modelo aporta sobre predecir simplemente la media."""
+        """El modelo mejora a predecir la media del período."""
         return self.destreza > 0
+
+    @property
+    def persistencia_aporta(self) -> bool:
+        """La persistencia de régimen mejora al ciclo diurno por sí solo."""
+        return self.destreza_vs_ciclo > 0
 
 
 @dataclass
 class Prediccion:
-    """Pronóstico con banda de incertidumbre y su validación asociada."""
+    """Pronóstico con banda de incertidumbre dependiente del horizonte."""
 
     tiempo: pd.Series
     esperado: np.ndarray
     inferior: np.ndarray
     superior: np.ndarray
-    sigma: float
+    sigma: float               # dispersión asintótica (horizonte infinito)
     con_tendencia: bool
     horizonte_h: float
-    tau_min: float
+    tau_min: float             # tiempo de decorrelación intradiario
+    estado: Estado | None = None
     validacion: Validacion | None = None
     advertencias: list[str] = field(default_factory=list)
 
 
+# ============================================================================
+#  Núcleo del modelo
+# ============================================================================
 def _matriz_diseno(
     tiempos: pd.Series,
     t_origen: pd.Timestamp,
     n_armonicos: int,
     con_tendencia: bool,
 ) -> np.ndarray:
-    """Construye la matriz de diseño para instantes arbitrarios.
+    """Matriz de diseño para instantes arbitrarios.
 
     Replica la especificación de `decompose.ajustar_ciclo_diurno`, de modo que
     los coeficientes estimados allí sean aplicables aquí sin reajuste.
@@ -115,7 +147,7 @@ def _coeficientes(
     n_armonicos: int,
     con_tendencia: bool,
 ) -> tuple[np.ndarray, pd.Timestamp, float]:
-    """Estima los coeficientes del modelo y la dispersión residual."""
+    """Coeficientes del ciclo y dispersión residual."""
     d = df[[col_tiempo, columna]].dropna().sort_values(col_tiempo).reset_index(drop=True)
     X = _matriz_diseno(d[col_tiempo], d[col_tiempo].iloc[0], n_armonicos, con_tendencia)
     y = d[columna].to_numpy(dtype=float)
@@ -128,6 +160,89 @@ def _coeficientes(
     return coef, d[col_tiempo].iloc[0], sigma
 
 
+def _estimar_estado(
+    train: pd.DataFrame,
+    columna: str,
+    col_tiempo: str,
+    n_armonicos: int,
+    con_tendencia: bool,
+    intervalo_min: int,
+) -> tuple[np.ndarray, pd.Timestamp, Estado]:
+    """Estima ciclo, escalas y condición inicial a partir del pasado.
+
+    Si la serie no admite separación de escalas —menos de dos jornadas— el
+    modelo degrada a ciclo diurno con anomalía de decaimiento inmediato, sin
+    componente sinóptica.
+    """
+    coef, t0, sigma = _coeficientes(train, columna, col_tiempo,
+                                    n_armonicos, con_tendencia)
+    m = ajustar_ciclo_diurno(train, columna, col_tiempo,
+                             n_armonicos=n_armonicos, con_tendencia=con_tendencia)
+
+    try:
+        # Solo se requiere el τ intradiario: el rezago máximo de la
+        # autocorrelación total se reduce para no encarecer el cálculo.
+        e = separar_escalas(m, intervalo_min=intervalo_min, max_rezago_total_h=24.0)
+        tau_i = (e.tau_intradiario_min if np.isfinite(e.tau_intradiario_min)
+                 else float(intervalo_min))
+        rho = (float(np.clip(e.rho_diario, 0.0, RHO_MAXIMO))
+               if np.isfinite(e.rho_diario) else 0.0)
+        var_i, var_s = e.var_intradiaria, e.var_sinoptica
+        r = e.residual
+    except ValueError:
+        tau_i, rho = float(intervalo_min), 0.0
+        var_i, var_s = sigma**2, 0.0
+        r = pd.Series(m.residual.to_numpy(dtype=float),
+                      index=pd.DatetimeIndex(m.tiempo))
+
+    validos = r.dropna()
+    t_ultimo = validos.index[-1]
+    reciente = r[r.index > t_ultimo - pd.Timedelta(hours=24)]
+    nivel = float(np.nanmean(reciente.to_numpy())) if reciente.notna().any() else 0.0
+    anomalia = float(validos.iloc[-1]) - nivel
+
+    return coef, t0, Estado(
+        tau_intradiario_min=tau_i,
+        rho_diario=rho,
+        var_intradiaria=var_i,
+        var_sinoptica=var_s,
+        nivel_sinoptico=nivel,
+        anomalia_intradiaria=anomalia,
+    )
+
+
+def _proyectar(
+    coef: np.ndarray,
+    t0: pd.Timestamp,
+    estado: Estado,
+    tiempos: pd.Series,
+    t_ultimo: pd.Timestamp,
+    n_armonicos: int,
+    con_tendencia: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Proyecta el modelo sobre instantes futuros.
+
+    Returns
+    -------
+    (esperado, desviación estándar, ciclo sin persistencia)
+    """
+    ciclo = _matriz_diseno(tiempos, t0, n_armonicos, con_tendencia) @ coef
+    delta = ((tiempos - t_ultimo).dt.total_seconds() / 60.0).to_numpy(dtype=float)
+
+    fs = estado.rho_diario ** (delta / 1440.0)
+    fi = np.exp(-delta / max(estado.tau_intradiario_min, 1e-6))
+
+    esperado = (ciclo
+                + estado.nivel_sinoptico * fs
+                + estado.anomalia_intradiaria * fi)
+    var = (estado.var_intradiaria * (1.0 - fi**2)
+           + estado.var_sinoptica * (1.0 - fs**2))
+    return esperado, np.sqrt(np.maximum(var, 1e-8)), ciclo
+
+
+# ============================================================================
+#  Validación
+# ============================================================================
 def validar_fuera_de_muestra(
     df: pd.DataFrame,
     columna: str = "temp_c.prom",
@@ -136,58 +251,93 @@ def validar_fuera_de_muestra(
     n_armonicos: int = 3,
     con_tendencia: bool = False,
     confianza: float = 0.95,
+    n_origenes: int = 1,
+    intervalo_min: int = INTERVALO_MIN_DEFECTO,
 ) -> Validacion | None:
-    """Evalúa el modelo sobre el tramo final, excluido del ajuste.
+    """Evalúa el modelo con origen móvil sobre ventanas sucesivas.
 
-    La partición es estrictamente temporal: se ajusta con todo lo anterior a
-    las últimas `horas_prueba` y se predice ese tramo. Cualquier otra forma de
-    partición sobrestimaría el desempeño por la autocorrelación de la serie.
+    Se pronostican `n_origenes` ventanas consecutivas de `horas_prueba`, la
+    última de las cuales termina con el registro. Cada ventana se pronostica
+    con parámetros estimados únicamente sobre los datos que la preceden.
 
-    Se reporta además la **destreza** respecto a una referencia climatológica
-    trivial: predecir siempre la media del período de ajuste. Un modelo que no
-    supera esa referencia no justifica su complejidad.
+    Un único origen es frágil: el desempeño queda determinado por el régimen
+    meteorológico de esa jornada concreta. Varios orígenes promedian sobre
+    regímenes distintos y producen una estimación más representativa.
     """
     d = df[[col_tiempo, columna]].dropna().sort_values(col_tiempo).reset_index(drop=True)
     if len(d) < 200:
         return None
 
-    corte = d[col_tiempo].iloc[-1] - pd.Timedelta(hours=horas_prueba)
-    ajuste = d[d[col_tiempo] <= corte]
-    prueba = d[d[col_tiempo] > corte]
-
     n_param = 1 + 2 * n_armonicos + (1 if con_tendencia else 0)
-    if len(ajuste) < n_param + 50 or len(prueba) < 10:
+    z = float(stats.norm.ppf(0.5 + confianza / 2))
+    t_fin_serie = d[col_tiempo].iloc[-1]
+
+    errores, err_clim, err_ciclo, dentro, deltas = [], [], [], [], []
+    usados = 0
+
+    for k in range(n_origenes, 0, -1):
+        fin_ventana = t_fin_serie - pd.Timedelta(hours=horas_prueba * (k - 1))
+        corte = fin_ventana - pd.Timedelta(hours=horas_prueba)
+        train = d[d[col_tiempo] <= corte]
+        prueba = d[(d[col_tiempo] > corte) & (d[col_tiempo] <= fin_ventana)]
+
+        if len(train) < n_param + 50 or len(prueba) < 10:
+            continue
+
+        try:
+            coef, t0, est = _estimar_estado(train, columna, col_tiempo,
+                                            n_armonicos, con_tendencia, intervalo_min)
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+
+        t_ultimo = train[col_tiempo].iloc[-1]
+        tiempos = prueba[col_tiempo].reset_index(drop=True)
+        esp, sd, ciclo = _proyectar(coef, t0, est, tiempos, t_ultimo,
+                                    n_armonicos, con_tendencia)
+        obs = prueba[columna].to_numpy(dtype=float)
+
+        errores.append(obs - esp)
+        err_ciclo.append(obs - ciclo)
+        err_clim.append(obs - float(train[columna].mean()))
+        dentro.append(np.abs(obs - esp) <= z * sd)
+        deltas.append(((tiempos - t_ultimo).dt.total_seconds() / 60.0).to_numpy())
+        usados += 1
+
+    if usados == 0:
         return None
 
-    coef, t0, sigma = _coeficientes(ajuste, columna, col_tiempo,
-                                    n_armonicos, con_tendencia)
+    e = np.concatenate(errores)
+    dl = np.concatenate(deltas)
+    mae = float(np.mean(np.abs(e)))
+    mae_clim = float(np.mean(np.abs(np.concatenate(err_clim))))
+    mae_ciclo = float(np.mean(np.abs(np.concatenate(err_ciclo))))
 
-    X = _matriz_diseno(prueba[col_tiempo], t0, n_armonicos, con_tendencia)
-    pred = X @ coef
-    obs = prueba[columna].to_numpy(dtype=float)
-    err = obs - pred
-
-    z = float(stats.norm.ppf(0.5 + confianza / 2))
-    dentro = np.abs(err) <= z * sigma
-
-    # Referencia climatológica: la media del período de ajuste.
-    media_ajuste = float(ajuste[columna].mean())
-    mae_ref = float(np.mean(np.abs(obs - media_ajuste)))
-    mae = float(np.mean(np.abs(err)))
+    por_horizonte = {}
+    for etiqueta, limite in [("1 h", 60), ("6 h", 360), ("24 h", 1440)]:
+        m = dl <= limite
+        if m.any():
+            por_horizonte[etiqueta] = float(np.mean(np.abs(e[m])))
 
     return Validacion(
-        n=len(prueba),
+        n=len(e),
+        n_origenes=usados,
         mae=mae,
-        rmse=float(np.sqrt(np.mean(err**2))),
-        sesgo=float(np.mean(err)),
-        cobertura=float(np.mean(dentro)),
+        rmse=float(np.sqrt(np.mean(e**2))),
+        sesgo=float(np.mean(e)),
+        cobertura=float(np.mean(np.concatenate(dentro))),
         cobertura_nominal=confianza,
         horizonte_h=horas_prueba,
-        mae_climatologia=mae_ref,
-        destreza=float(1.0 - mae / mae_ref) if mae_ref > 0 else 0.0,
+        mae_climatologia=mae_clim,
+        mae_ciclo=mae_ciclo,
+        destreza=float(1.0 - mae / mae_clim) if mae_clim > 0 else 0.0,
+        destreza_vs_ciclo=float(1.0 - mae / mae_ciclo) if mae_ciclo > 0 else 0.0,
+        mae_por_horizonte=por_horizonte,
     )
 
 
+# ============================================================================
+#  Pronóstico
+# ============================================================================
 def predecir(
     df: pd.DataFrame,
     columna: str = "temp_c.prom",
@@ -197,13 +347,13 @@ def predecir(
     n_armonicos: int = 3,
     confianza: float = 0.95,
     validar: bool = True,
+    n_origenes: int = 5,
 ) -> Prediccion | None:
-    """Pronostica la variable con banda de incertidumbre.
+    """Pronostica la variable con banda de incertidumbre dependiente del horizonte.
 
-    La especificación del modelo —con o sin término de tendencia— la decide
-    `detectar_tendencia`, de modo que la predicción no incorpore una deriva
-    que los datos no sostienen. Extrapolar una tendencia espuria es el modo de
-    fallo más frecuente en el pronóstico de series ambientales cortas.
+    La especificación del ciclo —con o sin tendencia— la decide
+    `detectar_tendencia`, de modo que no se extrapole una deriva que los
+    datos no sostienen.
     """
     d = df[[col_tiempo, columna]].dropna().sort_values(col_tiempo).reset_index(drop=True)
     if len(d) < 200:
@@ -213,17 +363,10 @@ def predecir(
     con_tendencia = bool(contraste["recomendada"])
 
     try:
-        modelo = ajustar_ciclo_diurno(df, columna, col_tiempo,
-                                      n_armonicos=n_armonicos,
-                                      con_tendencia=con_tendencia)
+        coef, t0, est = _estimar_estado(d, columna, col_tiempo,
+                                        n_armonicos, con_tendencia, intervalo_min)
     except (ValueError, np.linalg.LinAlgError):
         return None
-
-    acf = autocorrelacion(modelo.residual, max_rezago=min(576, len(d) // 2))
-    tau = float(tiempo_decorrelacion(acf, intervalo_min * 60).get("minutos", np.nan))
-
-    coef, t0, sigma = _coeficientes(df, columna, col_tiempo,
-                                    n_armonicos, con_tendencia)
 
     t_ultimo = d[col_tiempo].iloc[-1]
     futuro = pd.Series(pd.date_range(
@@ -232,29 +375,27 @@ def predecir(
         freq=f"{intervalo_min}min",
     ))
 
-    X = _matriz_diseno(futuro, t0, n_armonicos, con_tendencia)
-    esperado = X @ coef
-
+    esperado, sd, _ = _proyectar(coef, t0, est, futuro, t_ultimo,
+                                 n_armonicos, con_tendencia)
     z = float(stats.norm.ppf(0.5 + confianza / 2))
-    banda = z * sigma
 
     advertencias = []
-    if np.isfinite(tau) and horas * 60 > tau:
+    if horas * 60 > est.tau_intradiario_min:
         advertencias.append(
-            f"El horizonte solicitado ({horas:.0f} h) excede el tiempo de "
-            f"decorrelación ({tau:.0f} min). Más allá de ese punto la predicción "
-            "converge al ciclo climatológico y no incorpora información del "
-            "estado presente."
+            f"Más allá de {est.tau_intradiario_min:.0f} min —tiempo de decorrelación "
+            "intradiario— la anomalía presente se disipa. El pronóstico se apoya "
+            f"entonces en la persistencia del régimen sinóptico (ρ diario = "
+            f"{est.rho_diario:.2f}) y converge al ciclo climatológico."
         )
     if con_tendencia:
         advertencias.append(
-            f"La predicción extrapola una deriva de {modelo.pendiente_dia:+.3f} "
+            f"La predicción extrapola una deriva de {contraste['pendiente_dia']:+.3f} "
             "°C/día. La extrapolación lineal pierde validez con el horizonte."
         )
     if len(d) < 288 * 7:
         advertencias.append(
             f"El ajuste emplea {len(d) / 288:.1f} días de registro; la estimación "
-            "del ciclo diurno gana estabilidad con series más extensas."
+            "del ciclo y de la persistencia gana estabilidad con series más extensas."
         )
 
     val = None
@@ -263,17 +404,20 @@ def predecir(
                                        horas_prueba=min(horas, 24.0),
                                        n_armonicos=n_armonicos,
                                        con_tendencia=con_tendencia,
-                                       confianza=confianza)
+                                       confianza=confianza,
+                                       n_origenes=n_origenes,
+                                       intervalo_min=intervalo_min)
 
     return Prediccion(
         tiempo=futuro,
         esperado=esperado,
-        inferior=esperado - banda,
-        superior=esperado + banda,
-        sigma=sigma,
+        inferior=esperado - z * sd,
+        superior=esperado + z * sd,
+        sigma=float(np.sqrt(est.var_intradiaria + est.var_sinoptica)),
         con_tendencia=con_tendencia,
         horizonte_h=horas,
-        tau_min=tau,
+        tau_min=est.tau_intradiario_min,
+        estado=est,
         validacion=val,
         advertencias=advertencias,
     )
@@ -290,16 +434,19 @@ class Recomendacion:
     prioridad: str          # alta | media | baja
     titulo: str
     detalle: str
-    magnitud: str = ""      # beneficio o severidad, cuando es cuantificable
+    magnitud: str = ""
 
 
 def _cadencia_sugerida(tau_min: float, intervalo_min: int) -> int:
-    """Cadencia de transmisión compatible con la dinámica observada.
+    """Cadencia de transmisión compatible con la dinámica intradiaria.
 
-    Se adopta τ/3 como regla operativa: preserva holgadamente la dinámica del
-    proceso —tres muestras por tiempo característico— sin incurrir en la
-    redundancia de un muestreo mucho más denso. El valor se redondea a un
-    múltiplo de cinco minutos por conveniencia de implementación.
+    Se adopta τ/3 como regla operativa: tres muestras por tiempo
+    característico preservan la dinámica sin incurrir en redundancia. El valor
+    se redondea a múltiplos de cinco minutos y se acota a una hora.
+
+    El τ empleado debe ser el intradiario. El del residual completo crece con
+    la longitud del registro porque incorpora regímenes de varios días, y
+    conduciría a cadencias que perderían la dinámica de horas.
     """
     if not np.isfinite(tau_min) or tau_min <= 0:
         return intervalo_min
@@ -319,16 +466,11 @@ def prescribir(
     """Deriva recomendaciones operativas del estado observado del sistema.
 
     El alcance es deliberadamente interno: cadencia de transmisión, integridad
-    del instrumento, suficiencia de la serie y validez del modelo. No se emiten
-    recomendaciones sobre el fenómeno ambiental, que exigirían una cadena de
-    medición calibrada y trazable.
-
-    Las recomendaciones se ordenan por prioridad para que la más consecuente
-    encabece la lista.
+    del instrumento, suficiencia de la serie y validez del modelo.
     """
     recs: list[Recomendacion] = []
 
-    # --- Energía: cadencia de transmisión ---
+    # --- Energía ---
     if prediccion is not None and np.isfinite(prediccion.tau_min):
         tau = prediccion.tau_min
         sugerida = _cadencia_sugerida(tau, intervalo_min)
@@ -339,15 +481,15 @@ def prescribir(
                 prioridad="media",
                 titulo=f"Ampliar la cadencia de transmisión a {sugerida} min",
                 detalle=(
-                    f"El residual se decorrelaciona en {tau:.0f} min, de modo que "
-                    f"el muestreo actual cada {intervalo_min} min produce "
-                    f"observaciones redundantes. Una cadencia de {sugerida} min "
-                    "conserva tres muestras por tiempo característico del proceso."
+                    f"La componente intradiaria del residual se decorrelaciona en "
+                    f"{tau:.0f} min, de modo que el muestreo cada {intervalo_min} min "
+                    f"produce observaciones redundantes. Una cadencia de {sugerida} "
+                    "min conserva tres muestras por tiempo característico."
                 ),
                 magnitud=f"−{ahorro:.0f} % de transmisiones",
             ))
 
-    # --- Mantenimiento: integridad del instrumento ---
+    # --- Mantenimiento ---
     espontaneos = diagnostico.get("reinicios_espontaneos", 0)
     if espontaneos > 0:
         recs.append(Recomendacion(
@@ -383,7 +525,8 @@ def prescribir(
             prioridad="media",
             titulo="Margen de memoria reducido",
             detalle=(
-                f"El mínimo observado es de {diagnostico.get('heap_min', 0):.0f} B. "
+                f"El mínimo observado es de {diagnostico.get('heap_min', 0):.0f} B, "
+                f"con fragmentación de hasta {diagnostico.get('frag_max_pct', 0):.0f} %. "
                 "El establecimiento de la conexión TLS opera cerca del límite "
                 "disponible, lo que aconseja migrar a una plataforma con mayor "
                 "memoria antes de ampliar la funcionalidad."
@@ -391,7 +534,7 @@ def prescribir(
             magnitud=f"{diagnostico.get('heap_min', 0):.0f} B libres",
         ))
 
-    # --- Calidad del registro ---
+    # --- Calidad ---
     if resumen_qc is not None and resumen_qc.fraccion_descartada > 0.10:
         recs.append(Recomendacion(
             categoria="calidad",
@@ -414,9 +557,9 @@ def prescribir(
             titulo="Pérdida sistemática de muestras por intervalo",
             detalle=(
                 f"El valor modal es de {muestras_moda} muestras frente a las 150 "
-                f"esperadas. La deriva del temporizador respecto al reloj explica "
-                f"la ausencia de {perdida} muestra(s) por intervalo, sin "
-                "consecuencia apreciable sobre los estadísticos."
+                f"esperadas. La deriva del temporizador explica la ausencia de "
+                f"{perdida} muestra(s) por intervalo, sin consecuencia apreciable "
+                "sobre los estadísticos."
             ),
             magnitud=f"−{100 * perdida / 150:.1f} %",
         ))
@@ -432,10 +575,22 @@ def prescribir(
                 detalle=(
                     f"El error absoluto medio fuera de muestra ({v.mae:.2f} °C) no "
                     f"mejora al de predecir la media del período "
-                    f"({v.mae_climatologia:.2f} °C). El ciclo diurno estimado no "
-                    "está aportando capacidad predictiva sobre este tramo."
+                    f"({v.mae_climatologia:.2f} °C) sobre {v.n_origenes} ventanas."
                 ),
                 magnitud=f"destreza {v.destreza:+.2f}",
+            ))
+        if not v.persistencia_aporta:
+            recs.append(Recomendacion(
+                categoria="metodologia",
+                prioridad="baja",
+                titulo="La persistencia de régimen no mejora al ciclo",
+                detalle=(
+                    f"Con persistencia el error es {v.mae:.2f} °C frente a "
+                    f"{v.mae_ciclo:.2f} °C del ciclo por sí solo. El régimen "
+                    "vigente no está aportando información predictiva en el "
+                    "período evaluado."
+                ),
+                magnitud=f"{v.destreza_vs_ciclo:+.2f}",
             ))
         if abs(v.cobertura - v.cobertura_nominal) > 0.10:
             direccion = ("subestima" if v.cobertura < v.cobertura_nominal
@@ -446,9 +601,8 @@ def prescribir(
                 titulo=f"La banda de predicción {direccion} la incertidumbre",
                 detalle=(
                     f"El {v.cobertura:.0%} de las observaciones cae dentro del "
-                    f"intervalo, frente al {v.cobertura_nominal:.0%} nominal. La "
-                    "dispersión residual no describe adecuadamente el error de "
-                    "predicción, probablemente por heterogeneidad entre jornadas."
+                    f"intervalo, frente al {v.cobertura_nominal:.0%} nominal, sobre "
+                    f"{v.n_origenes} ventanas de validación."
                 ),
                 magnitud=f"{v.cobertura:.0%} vs {v.cobertura_nominal:.0%}",
             ))
@@ -476,15 +630,14 @@ def prescribir(
             prioridad="baja",
             titulo="Variabilidad entre jornadas no modelada",
             detalle=(
-                f"Las pendientes por bloque presentan un coeficiente de "
-                f"variación de {contraste.get('cv_bloques', 0):.2f}, señal de "
-                "heterogeneidad meteorológica antes que de deriva. Incorporar "
-                "una covariable de nubosidad o radiación permitiría explicarla."
+                f"Las pendientes por bloque presentan un coeficiente de variación "
+                f"de {contraste.get('cv_bloques', 0):.2f}, señal de heterogeneidad "
+                "meteorológica antes que de deriva. Una covariable de nubosidad o "
+                "radiación permitiría explicarla."
             ),
             magnitud=f"CV = {contraste.get('cv_bloques', 0):.2f}",
         ))
 
-    # Calibración: siempre pendiente mientras no exista co-ubicación.
     recs.append(Recomendacion(
         categoria="metodologia",
         prioridad="alta",
