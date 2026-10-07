@@ -6,10 +6,17 @@ de la disponibilidad de la red.
 
 Cada lectura remota exitosa actualiza la copia local, de modo que el respaldo
 se mantiene vigente sin intervención.
+
+El límite de lectura debe exceder holgadamente el número de registros de la
+campaña: con 288 intervalos diarios, un límite insuficiente recorta en
+silencio el inicio de la serie y sesga cualquier estadístico calculado sobre
+ella.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,18 +25,21 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-# Carga variables desde analysis/.env si el archivo existe.
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-
-
 RAIZ = Path(__file__).resolve().parents[2]
 CACHE = Path(__file__).resolve().parent / "cache" / "ultimo.parquet"
+
+# Las credenciales se cargan desde analysis/.env antes de leer el entorno:
+# las constantes siguientes se evalúan una sola vez, al importar el módulo.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 DEVICE_ID = os.environ.get("UES_DEVICE_ID", "ues-b1c9fe")
 DB_URL = os.environ.get("FIREBASE_DB_URL", "")
 SECRETO = os.environ.get("FIREBASE_SECRET", "")
 
 ESQUEMA_SOPORTADO = 1
+
+# Equivale a unos 200 días de operación continua a 288 registros diarios.
+LIMITE_DEFECTO = 60_000
 
 
 def _normalizar(payload: dict) -> pd.DataFrame:
@@ -40,10 +50,17 @@ def _normalizar(payload: dict) -> pd.DataFrame:
     return df.sort_values("t_fin").reset_index(drop=True)
 
 
-def leer_remoto(limite: int = 5000, timeout: int = 20) -> pd.DataFrame:
-    """Descarga los últimos registros desde Firebase RTDB."""
+def leer_remoto(limite: int = LIMITE_DEFECTO, timeout: int = 60) -> pd.DataFrame:
+    """Descarga los registros desde Firebase RTDB.
+
+    Emite una advertencia si el número recibido alcanza el límite solicitado,
+    señal de que la serie podría estar recortada.
+    """
     if not DB_URL or not SECRETO:
-        raise RuntimeError("Faltan FIREBASE_DB_URL o FIREBASE_SECRET en el entorno.")
+        raise RuntimeError(
+            "Faltan FIREBASE_DB_URL o FIREBASE_SECRET. "
+            "Defínalas en analysis/.env o en el entorno."
+        )
 
     r = requests.get(
         f"{DB_URL}/estaciones/{DEVICE_ID}/datos.json",
@@ -51,7 +68,12 @@ def leer_remoto(limite: int = 5000, timeout: int = 20) -> pd.DataFrame:
         timeout=timeout,
     )
     r.raise_for_status()
-    return _normalizar(r.json() or {})
+    df = _normalizar(r.json() or {})
+
+    if len(df) >= limite:
+        print(f"[datos] ADVERTENCIA: se recibieron {len(df)} registros, igual al "
+              f"límite solicitado. La serie puede estar recortada; aumente el límite.")
+    return df
 
 
 def guardar_cache(df: pd.DataFrame) -> None:
@@ -65,7 +87,7 @@ def leer_cache() -> pd.DataFrame:
     return pd.read_parquet(CACHE)
 
 
-def cargar(limite: int = 5000) -> tuple[pd.DataFrame, str]:
+def cargar(limite: int = LIMITE_DEFECTO) -> tuple[pd.DataFrame, str]:
     """Devuelve los datos y el origen efectivo de la lectura.
 
     El origen se informa en la interfaz: un tablero que muestra datos en
@@ -87,16 +109,13 @@ def cargar(limite: int = 5000) -> tuple[pd.DataFrame, str]:
     ultimo = pd.to_datetime(df["t_fin"]).max()
     return df, f"copia local · último dato {ultimo:%d/%m %H:%M} UTC"
 
+
 def serializar(df: pd.DataFrame) -> str:
     """Codifica el DataFrame para transporte entre callbacks.
 
     Se usa Parquet en base64 en lugar de JSON: preserva tipos, zona horaria y
-    valores nulos sin conversiones implícitas, y evita el formato de fecha
-    deprecado de `to_json`.
+    valores nulos sin conversiones implícitas.
     """
-    import base64
-    import io
-
     buf = io.BytesIO()
     df.to_parquet(buf, index=False)
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -104,9 +123,6 @@ def serializar(df: pd.DataFrame) -> str:
 
 def deserializar(blob: str) -> pd.DataFrame:
     """Reconstruye el DataFrame codificado por `serializar`."""
-    import base64
-    import io
-
     if not blob:
         return pd.DataFrame()
     return pd.read_parquet(io.BytesIO(base64.b64decode(blob)))
