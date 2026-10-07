@@ -6,9 +6,11 @@ abstract: >-
   Firmware, protocolo de calibración y cadena de análisis para una estación
   ambiental urbana de bajo costo (temperatura, humedad relativa, presión
   barométrica y nivel sonoro). El sistema agrega intervalos alineados al reloj
-  con estadísticos de dispersión y diagnóstico de estado, y se valida por
-  co-ubicación con estaciones de la Red de Monitoreo de Calidad del Aire de
-  Bogotá (RMCAB). El foco de investigación es la caracterización de
+  con estadísticos de dispersión y diagnóstico de estado. La cadena de análisis
+  incorpora control de calidad con atribución de causa, contraste de tendencia
+  corregido por autocorrelación, separación del residual en escalas sinóptica e
+  intradiaria, pronóstico con persistencia de régimen validado con origen móvil
+  y prescripción operativa. El foco de investigación es la caracterización de
   incertidumbre y deriva de sensores de bajo costo en condiciones urbanas
   reales, no la simple obtención de lecturas.
 authors:
@@ -17,8 +19,8 @@ authors:
     orcid: "https://orcid.org/0009-0003-6483-790X"
     affiliation: "Jitter Ingeniería SAS / Universidad Central"
     country: CO
-version: "0.2.0"
-date-released: "2026-09-13"
+version: "0.3.0"
+date-released: "2026-10-07"
 license: Apache-2.0
 repository-code: "https://github.com/nvasquezc/urban-environmental-station"
 identifiers:
@@ -32,5 +34,8 @@ keywords:
   - calibración in situ
   - sistemas embebidos
   - IoT ambiental
+  - series temporales
+  - autocorrelación
+  - pronóstico
   - Bogotá
   - metrología

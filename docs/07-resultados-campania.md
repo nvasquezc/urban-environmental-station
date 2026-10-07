@@ -1,51 +1,83 @@
 # Resultados de la campaña
 
-<!-- Generado por analysis/tools/exportar_figuras.py el 2026-09-19 03:06 UTC. No editar a mano. -->
+<!-- Generado por analysis/tools/exportar_figuras.py el 2026-10-07 04:42 UTC. No editar a mano. -->
 
 **Nodo:** `ues-b1c9fe`  
-**Período:** 2026-09-15 17:25 a 2026-09-18 21:55 (hora local)  
+**Período:** 2026-09-15 17:25 a 2026-10-06 23:35 (hora local) · 21.3 días  
 **Estado de calibración:** sin calibrar
 
-## Indicadores
+## Operación
 
-| Magnitud | Valor | Observación |
-|---|---|---|
-| Registros válidos | 919 | de 919 evaluados |
-| Completitud | 100.0% | 919 de 919 intervalos esperados |
-| Varianza explicada | 0.927 | ciclo diurno, 3 armónicos |
-| Dispersión residual | 0.388 °C | no explicada por el ciclo |
-| Incertidumbre U (k=2) | 0.0025 °C | cota inferior, excluye calibración |
-| Tiempo de decorrelación | 75 min | sobremuestreo de factor 15 |
-| Arranques | 1 | 0 espontáneos |
-| Deriva de memoria | -2.4 B/h | regresión sobre el período |
-| Interrupciones | 0 | discontinuidades en la serie |
+| Indicador | Valor |
+|---|---|
+| Registros válidos | 5757 de 5772 (99.7 %) |
+| Completitud | 94.0% |
+| Interrupciones | 9 · 366 intervalos · 31.2 h |
+| Arranques | 8 · 0 espontáneos |
+| Intervalos recuperados por la cola persistente | 465 |
+| Memoria libre mínima | 4400 B · deriva +1.6 B/h |
 
-## Figuras
+![Estabilidad del nodo](figuras/07-estabilidad-nodo.png)
 
-### Descomposición de la señal
+## Señal
 
-![Descomposición](figuras/01-descomposicion.png)
+| Magnitud | Valor |
+|---|---|
+| Varianza explicada por el ciclo diurno | 0.697 |
+| Dispersión residual | 1.124 °C |
+| Amplitud diurna | 4.60 °C |
+| Pendiente global | +0.0451 °C/día |
+| Tendencia incorporada | no — pendiente por debajo del umbral de relevancia (0.1 °C/día) |
+| Autocorrelación de primer orden | 0.9984 |
+| Tamaño efectivo de muestra | 29 de 5757 |
 
-El ciclo diurno ajustado mediante 3 armónicos de Fourier explica el 92.7% de la varianza observada. El residual presenta una dispersión de 0.388 °C, comparable a la incertidumbre de fábrica del sensor AHT20 (±0.3 °C).
+![Descomposición de la señal](figuras/01-descomposicion.png)
 
-### Estructura temporal
+![Patrón hora por día](figuras/05-patron-hora-dia.png)
 
-![Autocorrelación](figuras/02-autocorrelacion.png)
+![Distribución del residual](figuras/06-distribucion-residual.png)
 
-La autocorrelación del residual decae por debajo de 1/e a los 75 minutos, frente a un intervalo de muestreo de 5 minutos. El sistema opera con un sobremuestreo de factor 15, lo que acota empíricamente el intervalo de transmisión mínimo necesario y abre margen para reducir el consumo energético sin pérdida de contenido informativo.
+## Escalas temporales del residual
 
-![Matriz hora-día](figuras/04-matriz.png)
+| Magnitud | Valor |
+|---|---|
+| Tiempo de decorrelación intradiario | 145 min |
+| Tiempo de decorrelación del residual completo | 1500 min |
+| Fracción sinóptica de la varianza residual | 64% |
+| Dispersión sinóptica | 0.876 °C |
+| Dispersión intradiaria | 0.663 °C |
+| Correlación entre jornadas consecutivas | +0.55 |
+| Cadencia de transmisión sugerida | 50 min |
 
-### Distribución del residual
+El tiempo de decorrelación del residual completo incorpora regímenes de varios días y crece con la longitud del registro: describe el período observado, no el proceso. El de la componente intradiaria, obtenido tras un filtro pasa altos de 24 h, es el que fija la cadencia de muestreo.
 
-![Residual](figuras/03-residual.png)
+![Persistencia intradiaria](figuras/02-persistencia-intradiaria.png)
 
-### Estabilidad del instrumento
+## Pronóstico
 
-![Estabilidad](figuras/05-estabilidad.png)
+Validación de origen móvil sobre 5 ventanas de 24 h, cada una pronosticada con parámetros estimados exclusivamente sobre los datos que la preceden.
 
-![Calidad](figuras/06-calidad.png)
+| Métrica | Valor |
+|---|---|
+| Error absoluto medio | 0.957 °C |
+| Raíz del error cuadrático medio | 1.320 °C |
+| Sesgo | -0.299 °C |
+| Destreza frente a la climatología | +0.350 |
+| Destreza frente al ciclo sin persistencia | +0.063 |
+| Cobertura de la banda | 77.5% (nominal 95%) |
+
+| Horizonte | Error absoluto medio |
+|---|---|
+| ≤ 1 h | 0.073 °C |
+| ≤ 6 h | 0.173 °C |
+| ≤ 24 h | 0.971 °C |
+
+El error a horizontes cortos no constituye por sí solo evidencia de destreza: debe contrastarse con la persistencia ingenua del último valor.
+
+![Pronóstico](figuras/03-pronostico.png)
+
+![Error por horizonte](figuras/04-error-horizonte.png)
 
 ---
 
-**Alcance.** Lecturas sin corrección por calibración. La incertidumbre reportada recoge únicamente la dispersión intra-intervalo y constituye una cota inferior: la componente de calibración permanece indeterminada hasta completar la co-ubicación con una referencia trazable. Estos valores no deben emplearse con fines normativos.
+**Alcance.** Lecturas sin corrección por calibración. La incertidumbre reportada recoge solo la dispersión intra-intervalo y constituye una cota inferior: la componente de calibración permanece indeterminada hasta completar la co-ubicación con una referencia trazable. Estos valores no deben emplearse con fines normativos.
