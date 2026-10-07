@@ -4,13 +4,9 @@ Dos vistas seleccionables desde la barra lateral: el resumen operativo, que
 recoge el estado del sistema y el diagnóstico de la señal, y el pronóstico,
 que aloja la capa predictiva junto a las recomendaciones que de ella derivan.
 
-La separación responde a que ambas responden preguntas distintas: la primera,
-qué está ocurriendo; la segunda, qué cabe esperar y qué conviene hacer.
-
-El modelo de descomposición incorpora un término de tendencia únicamente
-cuando el contraste de `detectar_tendencia` lo confirma. Los indicadores
-derivados dependen de esa decisión, de modo que el panel de contraste no es
-informativo sino constitutivo: documenta por qué los valores son los que son.
+El tiempo de decorrelación reportado es el de la componente intradiaria del
+residual. El del residual completo crece con la longitud del registro porque
+incorpora regímenes de varios días; se informa solo como referencia.
 
 Ejecución:
     cd analysis
@@ -29,12 +25,11 @@ from dashboard import figuras as F
 from dashboard.datos import DEVICE_ID, cargar, deserializar, serializar
 from uestation.decompose import (
     ajustar_ciclo_diurno,
-    autocorrelacion,
     detectar_tendencia,
     incertidumbre_expandida,
     matriz_hora_dia,
-    tiempo_decorrelacion,
 )
+from uestation.escalas import separar_escalas
 from uestation.forecast import predecir, prescribir
 from uestation.qc import aplicar_qc, completitud, detectar_huecos, diagnostico_estabilidad
 
@@ -192,7 +187,6 @@ def _navegar(_clicks):
     activa = "resumen"
     if ctx.triggered_id and isinstance(ctx.triggered_id, dict):
         activa = ctx.triggered_id.get("vista", "resumen")
-
     return activa, botones_nav(activa), TITULOS[activa]
 
 
@@ -215,13 +209,7 @@ def _preparar(blob):
 
 
 def _modelo(limpio):
-    """Ajusta la descomposición con la especificación que el contraste avala.
-
-    Devuelve (descomposición, resultado del contraste). El término de tendencia
-    se incorpora únicamente si los tres criterios lo respaldan; en caso
-    contrario se ajustaría una componente inexistente y el residual quedaría
-    artificialmente reducido.
-    """
+    """Ajusta la descomposición con la especificación que el contraste avala."""
     contraste = detectar_tendencia(limpio, "temp_c.prom")
     try:
         d = ajustar_ciclo_diurno(limpio, "temp_c.prom",
@@ -231,11 +219,19 @@ def _modelo(limpio):
     return d, contraste
 
 
+def _escalas(d):
+    """Separación de escalas del residual; None si la serie es insuficiente."""
+    if d is None:
+        return None
+    try:
+        return separar_escalas(d, intervalo_min=INTERVALO_MIN)
+    except ValueError:
+        return None
+
+
 def _ubicacion(df):
     """Posición del nodo a partir de las fijaciones satelitales disponibles.
 
-    Se toma la mediana de las coordenadas válidas: es robusta frente a los
-    errores de posicionamiento aislados, frecuentes con visibilidad parcial.
     La posición se emplea únicamente para centrar el mapa; nunca se publica.
     """
     if {"gps.lat", "gps.lon"} <= set(df.columns):
@@ -255,15 +251,6 @@ def _ubicacion(df):
 @app.callback(Output("contenido", "children"), Output("nota-alcance", "children"),
               Input("vista", "data"))
 def _vista(vista):
-    alcance_comun = [
-        html.B("Alcance. "),
-        "Lecturas sin corrección por calibración. La incertidumbre reportada "
-        "recoge solo la dispersión intra-intervalo y constituye una cota "
-        "inferior: la componente de calibración permanece indeterminada hasta "
-        "completar la co-ubicación con una referencia trazable. No apto para "
-        "uso normativo.",
-    ]
-
     if vista == "pronostico":
         contenido = html.Div([
             kpi("Error medio", "p-mae", " °C", "p-mae-nota", "kpi-violeta"),
@@ -272,28 +259,36 @@ def _vista(vista):
             kpi("Horizonte útil", "p-tau", " min", "p-tau-nota", "kpi-ambar"),
 
             panel("Pronóstico a 24 horas",
-                  "Proyección del ciclo estimado con banda de predicción al 95 %",
+                  "Ciclo diurno con persistencia de régimen y banda al 95 %",
                   [dcc.Graph(id="g-pred", config={"displayModeBar": False}),
                    html.Div(id="advertencias")], 7),
 
             panel("Recomendaciones operativas",
                   "Acciones derivadas del estado observado, por prioridad",
                   [html.Div(id="recomendaciones")], 5),
+
+            panel("Error por horizonte",
+                  "Error absoluto medio acumulado, validación de origen móvil",
+                  [dcc.Graph(id="g-horiz", config={"displayModeBar": False})], 6),
+
+            panel("Estado del pronóstico",
+                  "Condición inicial y parámetros estimados con el pasado",
+                  [html.Table(html.Tbody(id="tabla-estado"), className="tabla")], 6),
         ], className="rejilla")
 
         alcance = [
             html.B("Alcance. "),
-            "El pronóstico proyecta el ciclo diurno estimado a partir del registro "
-            "propio y no incorpora información meteorológica externa. Su validez "
-            "está acotada por el tiempo de decorrelación del residual: más allá de "
-            "ese horizonte converge al comportamiento climatológico del período. "
-            "Las métricas provienen de validación sobre datos excluidos del ajuste.",
+            "El pronóstico combina el ciclo diurno estimado con la persistencia "
+            "del régimen vigente y de la anomalía presente, cada una amortiguada a "
+            "su escala medida. No incorpora información meteorológica externa. Las "
+            "métricas provienen de validación de origen móvil sobre ventanas "
+            "excluidas del ajuste. El error a horizontes cortos no constituye por "
+            "sí solo evidencia de destreza.",
         ]
         return contenido, alcance
 
-    # Vista de resumen
     contenido = html.Div([
-        kpi("Decorrelación", "k-tau", " min", "k-tau-nota", "kpi-violeta"),
+        kpi("Decorrelación intradiaria", "k-tau", " min", "k-tau-nota", "kpi-violeta"),
         kpi("Registros válidos", "k-n", "", "k-n-nota", "kpi-cian"),
         kpi("Varianza explicada", "k-r2", "", "k-r2-nota", "kpi-verde"),
         kpi("Dispersión residual", "k-sigma", " °C", "k-sigma-nota", "kpi-rosa"),
@@ -310,8 +305,8 @@ def _vista(vista):
                   className="mapa-envoltura"),
                html.Div(id="mapa-pie", className="mapa-pie")], 4),
 
-        panel("Persistencia temporal",
-              "Autocorrelación del residual y tiempo de decorrelación",
+        panel("Persistencia intradiaria",
+              "Autocorrelación del residual tras filtrar los regímenes de 24 h",
               [dcc.Graph(id="g-acf", config={"displayModeBar": False})], 4),
 
         panel("Patrón hora × día",
@@ -339,11 +334,19 @@ def _vista(vista):
               [html.Div(id="eventos")], 12),
     ], className="rejilla")
 
-    return contenido, alcance_comun
+    alcance = [
+        html.B("Alcance. "),
+        "Lecturas sin corrección por calibración. La incertidumbre reportada "
+        "recoge solo la dispersión intra-intervalo y constituye una cota "
+        "inferior: la componente de calibración permanece indeterminada hasta "
+        "completar la co-ubicación con una referencia trazable. No apto para "
+        "uso normativo.",
+    ]
+    return contenido, alcance
 
 
 # ============================================================================
-#  Barras de calidad (comunes a ambas vistas)
+#  Barras de calidad
 # ============================================================================
 @app.callback(
     Output("qc-val", "children"), Output("qc-val-b", "style"),
@@ -374,7 +377,6 @@ def _barras(blob):
     p_val = 100.0 * resumen.n_salida / resumen.n_entrada if resumen.n_entrada else 0
     p_comp = c["completitud"] * 100
 
-    # Continuidad: fracción de intervalos no afectados por interrupciones.
     faltantes = int(huecos["intervalos_faltantes"].sum()) if not huecos.empty else 0
     esperados = max(c["esperados"], 1)
     p_cont = 100.0 * (esperados - faltantes) / esperados
@@ -410,15 +412,15 @@ def _kpis(blob):
     c = completitud(limpio)
     u = incertidumbre_expandida(limpio)
     d, _ = _modelo(limpio)
+    e = _escalas(d)
 
     tau_txt, tau_nota = g, ""
-    if d is not None:
-        a = autocorrelacion(d.residual, max_rezago=min(576, len(limpio) // 2))
-        tau = tiempo_decorrelacion(a).get("minutos", np.nan)
-        if np.isfinite(tau):
-            tau_txt = f"{tau:.0f}"
-            tau_nota = [html.B(f"{tau / INTERVALO_MIN:.0f}× "),
-                        f"sobre el intervalo de {INTERVALO_MIN} min"]
+    if e is not None and np.isfinite(e.tau_intradiario_min):
+        tau_txt = f"{e.tau_intradiario_min:.0f}"
+        total = (f"{e.tau_total_min:.0f} min" if np.isfinite(e.tau_total_min)
+                 else "no estimable")
+        tau_nota = [html.B(f"{e.tau_intradiario_min / INTERVALO_MIN:.0f}× "),
+                    f"sobre {INTERVALO_MIN} min · residual completo {total}"]
 
     r2_txt = f"{d.varianza_explicada:.3f}" if d else g
     if d is None:
@@ -429,9 +431,13 @@ def _kpis(blob):
         r2_nota = f"ciclo diurno, {d.n_armonicos} armónicos"
 
     sigma_txt = f"{d.sigma_residual:.3f}" if d else g
-    u_val = u.get("U_expandida_k2")
-    sigma_nota = ([html.B(f"U = {u_val:.3f} °C "), "(k=2, cota inferior)"]
-                  if u_val else "")
+    if e is not None:
+        sigma_nota = [html.B(f"{e.fraccion_sinoptica:.0%} "),
+                      "corresponde a regímenes de varios días"]
+    else:
+        u_val = u.get("U_expandida_k2")
+        sigma_nota = ([html.B(f"U = {u_val:.3f} °C "), "(k=2, cota inferior)"]
+                      if u_val else "")
 
     return (
         tau_txt, tau_nota,
@@ -516,19 +522,21 @@ def _figuras(blob):
         return v, mapa_ini, [], v, v, v, v, [], []
 
     d, _ = _modelo(limpio)
+    e = _escalas(d)
 
     if d is not None:
-        a = autocorrelacion(d.residual, max_rezago=min(576, len(limpio) // 2))
         f_desc = F.fig_descomposicion(d)
-        f_acf = F.fig_acf(a, tiempo_decorrelacion(a), INTERVALO_MIN)
         f_hist = F.fig_histograma_residual(d)
     else:
-        f_desc = f_acf = f_hist = F.fig_vacia("Serie insuficiente")
+        f_desc = f_hist = F.fig_vacia("Serie insuficiente")
+
+    if e is not None:
+        f_acf = F.fig_acf(e.acf_intradiaria, {"minutos": e.tau_intradiario_min},
+                          INTERVALO_MIN)
+    else:
+        f_acf = F.fig_vacia("Se requieren al menos dos jornadas")
 
     lat, lon, fuente = _ubicacion(df)
-
-    # No se publican coordenadas: el emplazamiento se describe de forma
-    # cualitativa para no exponer la posición exacta del instrumento.
     pie_mapa = [
         html.Span([html.B("Emplazamiento "), "Bogotá D.C."]),
         html.Span([html.B("Altitud "), "≈ 2 600 m s. n. m."]),
@@ -560,11 +568,13 @@ def _figuras(blob):
     Output("p-cobertura", "children"), Output("p-cobertura-nota", "children"),
     Output("p-tau", "children"), Output("p-tau-nota", "children"),
     Output("g-pred", "figure"), Output("advertencias", "children"),
+    Output("g-horiz", "figure"), Output("tabla-estado", "children"),
     Input("store", "data"),
 )
 def _pronostico(blob):
     g = "—"
-    nada = (g, "", g, "", g, "", g, "", F.fig_vacia(), [])
+    vacia = F.fig_vacia()
+    nada = (g, "", g, "", g, "", g, "", vacia, [], vacia, [])
     if not blob:
         return nada
 
@@ -576,8 +586,8 @@ def _pronostico(blob):
     pred = predecir(limpio, horas=HORAS_PRONOSTICO, intervalo_min=INTERVALO_MIN)
 
     if d is None or pred is None:
-        return (g, "", g, "", g, "", g, "",
-                F.fig_vacia("Serie insuficiente para pronosticar"), [])
+        sin = F.fig_vacia("Serie insuficiente para pronosticar")
+        return (g, "", g, "", g, "", g, "", sin, [], sin, [])
 
     v = pred.validacion
     if v is None:
@@ -585,16 +595,14 @@ def _pronostico(blob):
         mae_nota = destreza_nota = cob_nota = "validación no disponible"
     else:
         mae_txt = f"{v.mae:.2f}"
-        mae_nota = f"fuera de muestra · n = {v.n} · sesgo {v.sesgo:+.2f} °C"
+        mae_nota = (f"{v.n_origenes} ventanas de 24 h · sesgo {v.sesgo:+.2f} °C")
 
         destreza_txt = f"{v.destreza:+.2f}"
-        if v.destreza > 0.5:
-            juicio = "mejora sustancial sobre la climatología"
-        elif v.destreza > 0:
-            juicio = "mejora marginal sobre la climatología"
-        else:
-            juicio = "no supera a predecir la media del período"
-        destreza_nota = [html.B(f"{v.mae_climatologia:.2f} °C "), juicio]
+        destreza_nota = [
+            "vs climatología · ",
+            html.B(f"{v.destreza_vs_ciclo:+.2f} "),
+            "aporte de la persistencia",
+        ]
 
         cob_txt = f"{v.cobertura * 100:.0f}"
         desv = v.cobertura - v.cobertura_nominal
@@ -609,7 +617,7 @@ def _pronostico(blob):
 
     if np.isfinite(pred.tau_min):
         tau_txt = f"{pred.tau_min:.0f}"
-        tau_nota = ["más allá converge al ", html.B("ciclo climatológico")]
+        tau_nota = ["luego domina la ", html.B("persistencia del régimen")]
     else:
         tau_txt, tau_nota = g, ""
 
@@ -619,9 +627,37 @@ def _pronostico(blob):
         for a in pred.advertencias
     ]
 
+    est = pred.estado
+    if est is not None:
+        if est.nivel_sinoptico > 0.3:
+            regimen, clase_reg = "cálido", "alerta"
+        elif est.nivel_sinoptico < -0.3:
+            regimen, clase_reg = "frío", "ok"
+        else:
+            regimen, clase_reg = "neutro", ""
+
+        def fila(k, val, clase=""):
+            return html.Tr([html.Td(k), html.Td(val, className=clase)])
+
+        tabla_estado = [
+            fila("Régimen vigente", regimen.capitalize(), clase_reg),
+            fila("Nivel sinóptico", f"{est.nivel_sinoptico:+.2f} °C"),
+            fila("Anomalía intradiaria", f"{est.anomalia_intradiaria:+.2f} °C"),
+            fila("Persistencia entre jornadas (ρ)", f"{est.rho_diario:.2f}"),
+            fila("Decorrelación intradiaria (τ)", f"{est.tau_intradiario_min:.0f} min"),
+            fila("σ intradiaria", f"{np.sqrt(est.var_intradiaria):.2f} °C"),
+            fila("σ sinóptica", f"{np.sqrt(est.var_sinoptica):.2f} °C"),
+            fila("Especificación",
+                 "ciclo + tendencia + persistencia" if pred.con_tendencia
+                 else "ciclo + persistencia"),
+        ]
+    else:
+        tabla_estado = []
+
     return (mae_txt, mae_nota, destreza_txt, destreza_nota,
             cob_txt, cob_nota, tau_txt, tau_nota,
-            F.fig_prediccion(d, pred), avisos)
+            F.fig_prediccion(d, pred), avisos,
+            F.fig_error_horizonte(v), tabla_estado)
 
 
 @app.callback(Output("recomendaciones", "children"), Input("store", "data"))

@@ -104,10 +104,6 @@ def fig_mapa(lat: float, lon: float, etiqueta: str = "Nodo",
     El nivel de acercamiento se mantiene deliberadamente bajo: la figura
     comunica el sector de la ciudad donde opera el instrumento, sin permitir
     su localización precisa. Las coordenadas no se rotulan.
-
-    Se emplea el estilo `carto-positron`, que no requiere credencial de
-    proveedor. Las teselas se descargan en línea; sin conexión el marcador
-    sigue siendo visible sobre fondo neutro.
     """
     capas = [
         dict(size=54, color="rgba(124,108,246,0.14)"),
@@ -214,6 +210,7 @@ def fig_descomposicion(d: Descomposicion, unidad: str = "°C") -> go.Figure:
 
 # --- Autocorrelación --------------------------------------------------------
 def fig_acf(acf: pd.DataFrame, td: dict, intervalo_min: int = 5) -> go.Figure:
+    """Autocorrelación con banda de significancia y tiempo de decorrelación."""
     if acf.empty:
         return fig_vacia("Serie insuficiente")
 
@@ -365,15 +362,16 @@ def fig_salud(df: pd.DataFrame) -> go.Figure:
                      secondary_y=False)
     fig.update_yaxes(showgrid=False, color=TEXTO_BAJO, secondary_y=True)
     return fig
+
+
 # --- Pronóstico -------------------------------------------------------------
 def fig_prediccion(d: Descomposicion, pred, horas_contexto: float = 48.0,
                    unidad: str = "°C") -> go.Figure:
     """Serie observada reciente y pronóstico con banda de incertidumbre.
 
-    Se muestra únicamente el tramo final de la serie observada: el contexto
-    relevante para juzgar un pronóstico es el estado inmediatamente anterior,
-    no la historia completa. La discontinuidad entre ambos tramos se marca
-    explícitamente para que no se confundan observación y predicción.
+    Solo se muestra el tramo final de la serie observada: el contexto
+    relevante para juzgar un pronóstico es el estado inmediatamente anterior.
+    La frontera entre observación y predicción se marca explícitamente.
     """
     if pred is None:
         return fig_vacia("Serie insuficiente para pronosticar")
@@ -389,8 +387,6 @@ def fig_prediccion(d: Descomposicion, pred, horas_contexto: float = 48.0,
     t_pred = pred.tiempo.dt.tz_convert(TZ).to_numpy()
 
     fig = go.Figure()
-
-    # Banda de predicción
     fig.add_trace(go.Scatter(
         x=np.concatenate([t_pred, t_pred[::-1]]),
         y=np.concatenate([pred.superior, pred.inferior[::-1]]),
@@ -398,20 +394,16 @@ def fig_prediccion(d: Descomposicion, pred, horas_contexto: float = 48.0,
         line={"width": 0}, hoverinfo="skip",
         name="IP 95 %"))
 
-
-    # Observado reciente
     fig.add_trace(go.Scatter(
         x=t_ctx, y=y_ctx, mode="lines", name="Observado",
         line={"color": VIOLETA, "width": 2, "shape": "spline", "smoothing": 0.4},
         hovertemplate="%{y:.2f} " + unidad + "<extra>observado</extra>"))
 
-    # Pronóstico
     fig.add_trace(go.Scatter(
         x=t_pred, y=pred.esperado, mode="lines", name="Pronóstico",
         line={"color": AMBAR, "width": 2.2, "dash": "dash"},
         hovertemplate="%{y:.2f} " + unidad + "<extra>pronóstico</extra>"))
 
-    # Frontera entre observación y predicción
     fig.add_vline(x=t_obs.iloc[-1], line={"color": "rgba(147,163,196,0.45)",
                                           "dash": "dot", "width": 1.4},
                   annotation_text="ahora", annotation_position="top",
@@ -425,4 +417,50 @@ def fig_prediccion(d: Descomposicion, pred, horas_contexto: float = 48.0,
         **_sin_margen(290))
     _ejes(fig)
     fig.update_yaxes(title_text=unidad, title_font_size=10)
+    return fig
+
+
+def fig_error_horizonte(v, unidad: str = "°C") -> go.Figure:
+    """Error absoluto medio acumulado por horizonte de pronóstico.
+
+    Las barras muestran el error sobre todas las predicciones hasta cada
+    horizonte. Las líneas de referencia —ciclo sin persistencia y media
+    climatológica— corresponden a la ventana completa de 24 h y permiten
+    juzgar en qué horizontes el modelo aporta sobre cada referencia.
+
+    El error a horizontes cortos no constituye por sí solo evidencia de
+    destreza: debe contrastarse con la persistencia ingenua del último valor.
+    """
+    if v is None or not v.mae_por_horizonte:
+        return fig_vacia("Validación no disponible")
+
+    etiquetas = [f"≤ {k}" for k in v.mae_por_horizonte]
+    valores = list(v.mae_por_horizonte.values())
+    colores = [CIAN, VIOLETA, AMBAR][: len(valores)]
+
+    fig = go.Figure(go.Bar(
+        x=etiquetas, y=valores,
+        marker={"color": colores, "line": {"width": 0}},
+        text=[f"{x:.2f}" for x in valores], textposition="outside",
+        textfont={"color": TEXTO, "size": 11},
+        hovertemplate="%{x}: %{y:.3f} " + unidad + "<extra></extra>",
+        width=0.55,
+    ))
+
+    fig.add_hline(y=v.mae_ciclo, line={"color": VERDE, "dash": "dash", "width": 1.4},
+                  annotation_text=f"ciclo sin persistencia · {v.mae_ciclo:.2f}",
+                  annotation_position="top left",
+                  annotation_font={"size": 10, "color": VERDE})
+    fig.add_hline(y=v.mae_climatologia,
+                  line={"color": ROJO, "dash": "dot", "width": 1.4},
+                  annotation_text=f"climatología · {v.mae_climatologia:.2f}",
+                  annotation_position="top left",
+                  annotation_font={"size": 10, "color": ROJO})
+
+    techo = max(max(valores), v.mae_climatologia) * 1.25
+    fig.update_layout(showlegend=False, margin={"l": 48, "r": 18, "t": 18, "b": 34},
+                      **_sin_margen(260))
+    _ejes(fig)
+    fig.update_yaxes(title_text=f"MAE ({unidad})", title_font_size=10,
+                     range=[0, techo])
     return fig
