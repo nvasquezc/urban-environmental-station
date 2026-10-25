@@ -143,13 +143,16 @@ def agregar_horario(
             fila[f"{var}_n"] = int(n.sum())
 
         # Sonido: solo si la serie declara base metrológica.
+        # Los intervalos marcados como saturados por el QC no entran en la
+        # composición energética: subestimarían el Leq de la hora.
         if "son.trazable" in g.columns and bool(g["son.trazable"].all()):
-            leq = g["son.leq"].dropna().to_numpy(dtype=float)
+            gs = g[g["son.qc_ok"].astype(bool)] if "son.qc_ok" in g.columns else g
+            leq = gs["son.leq"].dropna().to_numpy(dtype=float)
             if leq.size:
                 fila["son_leq"] = float(
                     10.0 * np.log10(np.mean(10.0 ** (leq / 10.0)))
                 )
-                fila["son_lmax"] = float(g["son.lmax"].max())
+                fila["son_lmax"] = float(gs["son.lmax"].max())
 
         filas.append(fila)
 

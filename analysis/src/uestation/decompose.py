@@ -218,6 +218,7 @@ def detectar_tendencia(
     fraccion_consistente: float = 0.75,
     cv_maximo: float = 0.60,
     razon_maxima: float = 2.0,
+    potencia: float = 0.80,
 ) -> dict:
     """Contrasta la presencia de una deriva sistemática en la serie.
 
@@ -250,6 +251,14 @@ def detectar_tendencia(
     obligatoria del protocolo §6.3: un estadístico global que no sobrevive a
     la partición de la muestra no constituye un hallazgo.
 
+    Cuando el contraste no detecta deriva se informa además la pendiente
+    mínima detectable. Si supera `umbral_c_dia`, el resultado es no
+    concluyente: la ausencia de hallazgo no excluye una deriva relevante.
+
+    El coeficiente de variación entre bloques solo se calcula cuando la
+    pendiente global supera el umbral de relevancia: con una pendiente global
+    próxima a cero el cociente diverge y carece de interpretación.
+
     Returns
     -------
     dict
@@ -277,6 +286,10 @@ def detectar_tendencia(
         "homogenea": False,
         "dispersion_bloques": 0.0,
         "cv_bloques": 0.0,
+        "ic95_dia": (np.nan, np.nan),
+        "pendiente_minima_detectable": np.nan,
+        "potencia_suficiente": False,
+        "concluyente": False,
         "mejora_sigma": 0.0,
         "sigma_sin": np.nan,
         "sigma_con": np.nan,
@@ -304,6 +317,17 @@ def detectar_tendencia(
     t_critico = float(stats.t.ppf(0.975, gl_ef))
     significativa = rsr > t_critico
 
+    # Intervalo de confianza y potencia. "No significativa" no equivale a
+    # "sin deriva": con pocos grados de libertad efectivos el contraste puede
+    # ser incapaz de detectar derivas relevantes. La pendiente mínima
+    # detectable (α = 0.05 bilateral, potencia 0.80) acota qué deriva se
+    # habría detectado de existir; solo si es menor que el umbral de
+    # relevancia la ausencia de hallazgo es informativa.
+    ic95 = (con_t.pendiente_dia - t_critico * ee_corr, con_t.pendiente_dia + t_critico * ee_corr)
+    t_potencia = float(stats.t.ppf(potencia, gl_ef))
+    pmd = (t_critico + t_potencia) * ee_corr
+    potencia_suficiente = bool(pmd <= umbral_c_dia)
+
     mejora = ((sin_t.sigma_residual - con_t.sigma_residual) / sin_t.sigma_residual
               if sin_t.sigma_residual > 0 else 0.0)
 
@@ -324,7 +348,9 @@ def detectar_tendencia(
     signo_global = np.sign(con_t.pendiente_dia)
     coincidentes = sum(1 for p in pendientes if np.sign(p) == signo_global)
 
-    if len(pendientes) >= 2 and con_t.pendiente_dia != 0:
+    supera = abs(con_t.pendiente_dia) > umbral_c_dia
+
+    if len(pendientes) >= 2 and supera:
         arr = np.array(pendientes, dtype=float)
         dispersion_bloques = float(np.std(arr, ddof=1))
         cv_bloques = dispersion_bloques / abs(con_t.pendiente_dia)
@@ -332,20 +358,28 @@ def detectar_tendencia(
         homogenea = bool(cv_bloques < cv_maximo and razon.max() < razon_maxima)
     else:
         homogenea = False
-        dispersion_bloques = 0.0
-        cv_bloques = float("inf")
+        dispersion_bloques = (float(np.std(pendientes, ddof=1))
+                              if len(pendientes) >= 2 else 0.0)
+        cv_bloques = float("nan")
 
     mismo_signo = (len(pendientes) >= 2
                    and coincidentes / len(pendientes) >= fraccion_consistente)
     consistente = mismo_signo and homogenea
 
-    supera = abs(con_t.pendiente_dia) > umbral_c_dia
-
     if not supera:
-        motivo = f"pendiente por debajo del umbral de relevancia ({umbral_c_dia} °C/día)"
+        if potencia_suficiente:
+            motivo = (f"pendiente por debajo del umbral de relevancia ({umbral_c_dia} °C/día); "
+                      f"se excluyen derivas mayores que {pmd:.3f} °C/día")
+        else:
+            motivo = (f"no concluyente: pendiente por debajo del umbral ({umbral_c_dia} °C/día), "
+                      f"pero la mínima detectable es {pmd:.3f} °C/día "
+                      f"con {n_ef:.0f} observaciones efectivas")
     elif not significativa:
         motivo = (f"no significativa al corregir por autocorrelación "
                   f"(t = {rsr:.2f} ≤ {t_critico:.2f} con {gl_ef:.0f} gl efectivos)")
+        if not potencia_suficiente:
+            motivo += (f"; no concluyente: la mínima detectable es "
+                       f"{pmd:.3f} °C/día")
     elif not mismo_signo:
         motivo = (f"signo inconsistente entre bloques "
                   f"({coincidentes} de {len(pendientes)})")
@@ -356,8 +390,13 @@ def detectar_tendencia(
     else:
         motivo = "deriva sistemática confirmada por los tres criterios"
 
+    recomendada = bool(supera and significativa and consistente)
     base.update({
-        "recomendada": bool(supera and significativa and consistente),
+        "recomendada": recomendada,
+        "ic95_dia": (float(ic95[0]), float(ic95[1])),
+        "pendiente_minima_detectable": float(pmd),
+        "potencia_suficiente": potencia_suficiente,
+        "concluyente": bool(recomendada or potencia_suficiente),
         "pendiente_dia": con_t.pendiente_dia,
         "pendiente_ee_nominal": con_t.pendiente_ee,
         "pendiente_ee_corregido": float(ee_corr),

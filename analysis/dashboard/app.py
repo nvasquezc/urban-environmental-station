@@ -481,7 +481,11 @@ def _contraste(blob):
                  f"t = {r['razon_senal_ruido']:.2f} vs {r['t_critico']:.2f} · "
                  f"{r['gl_efectivos']:.0f} gl efectivos"),
         criterio(r["homogenea"], "Homogeneidad entre bloques",
-                 f"CV = {r['cv_bloques']:.2f} · [{bloques}]"),
+                 (f"CV = {r['cv_bloques']:.2f}" if np.isfinite(r["cv_bloques"])
+                  else "CV no aplica") + f" · [{bloques}]"),
+        criterio(r["potencia_suficiente"], "Potencia del contraste",
+                 f"mínima detectable {r['pendiente_minima_detectable']:.3f} °C/día · "
+                 f"IC 95 % [{r['ic95_dia'][0]:+.3f}, {r['ic95_dia'][1]:+.3f}]"),
     ]
 
     if r["recomendada"]:
@@ -493,8 +497,9 @@ def _contraste(blob):
         ], className="veredicto veredicto-si")
     else:
         veredicto = html.Div([
-            html.B("Sin deriva sistemática. "),
-            f"{r['motivo'].capitalize()}. ",
+            html.B("Sin deriva sistemática. " if r["concluyente"]
+                   else "Sin deriva detectada (no concluyente). "),
+            f"{r['motivo'][:1].upper()}{r['motivo'][1:]}. ",
             f"Con ρ = {r['rho_lag1']:.3f}, las {r['n_observaciones']} observaciones "
             f"equivalen a {r['n_efectivo']:.0f} independientes: la significancia "
             "nominal resultaría engañosa sin esta corrección.",

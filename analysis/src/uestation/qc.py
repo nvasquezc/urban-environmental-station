@@ -30,6 +30,17 @@ RANGOS = {
     "p_hpa.prom": (500.0, 1100.0),
 }
 
+# Saturación del canal de sonido. `son.clip` cuenta bloques de 125 ms con al
+# menos una muestra en el tope del conversor; `son.n` cuenta bloques totales.
+# Un bloque saturado subestima la energía justo en los eventos más intensos,
+# que dominan el Leq. El umbral es provisional: se revisa cuando el frontend
+# tenga rango dinámico caracterizado (limitaciones conocidas, nivel sonoro §4).
+FRACCION_MAXIMA_CLIP = 0.01
+
+# El ESP8266 informa RSSI = +31 dBm cuando no hay asociación con el punto de
+# acceso. Un RSSI positivo no es físico: es un valor centinela.
+RSSI_MAXIMO_FISICO = 0.0
+
 CAUSAS = [
     "esquema_desconocido",
     "sin_timestamp",
@@ -48,6 +59,8 @@ class ResumenQC:
     n_entrada: int = 0
     n_salida: int = 0
     descartes: dict[str, int] = field(default_factory=lambda: dict.fromkeys(CAUSAS, 0))
+    # Marcas por variable: invalidan una variable sin descartar el registro.
+    marcas: dict[str, int] = field(default_factory=dict)
 
     @property
     def n_descartado(self) -> int:
@@ -72,6 +85,16 @@ class ResumenQC:
         ]
         for causa, n in self.descartes.items():
             lineas.append(f"| `{causa}` | {n} |")
+        if self.marcas:
+            lineas += [
+                "",
+                "Marcas por variable (el registro se conserva, la variable no se usa):",
+                "",
+                "| Marca | Registros |",
+                "|---|---|",
+            ]
+            for marca, n in self.marcas.items():
+                lineas.append(f"| `{marca}` | {n} |")
         lineas += [
             "",
             "> Un descarte superior al 10 % constituye un hallazgo y debe",
@@ -173,6 +196,12 @@ def aplicar_qc(
     # 7. Duplicados por timestamp. Se conserva el primero.
     malo = _marcar(d["t_fin"].duplicated(keep="first"), resumen, "duplicado", malo)
 
+    # Marca por variable: sonido saturado. No descarta el registro, porque la
+    # saturación del micrófono no compromete temperatura, humedad ni presión.
+    if {"son.clip", "son.n"} <= set(d.columns):
+        d["son.qc_ok"] = ~sonido_saturado(d)
+        resumen.marcas["son_saturado"] = int((~d["son.qc_ok"] & ~malo).sum())
+
     if devolver_marcas:
         d["qc_ok"] = ~malo
         resumen.n_salida = int((~malo).sum())
@@ -181,6 +210,20 @@ def aplicar_qc(
     limpio = d.loc[~malo].reset_index(drop=True)
     resumen.n_salida = len(limpio)
     return limpio, resumen
+
+
+def sonido_saturado(
+    df: pd.DataFrame, fraccion_maxima: float = FRACCION_MAXIMA_CLIP
+) -> pd.Series:
+    """Intervalos cuya fracción de bloques saturados excede `fraccion_maxima`.
+
+    Un intervalo sin bloques (`son.n` = 0 o ausente) se considera saturado:
+    no hay evidencia de que el nivel reportado sea válido.
+    """
+    n = pd.to_numeric(df["son.n"], errors="coerce")
+    clip = pd.to_numeric(df["son.clip"], errors="coerce").fillna(0)
+    fraccion = clip / n.where(n > 0)
+    return fraccion.isna() | (fraccion > fraccion_maxima)
 
 
 def detectar_huecos(df: pd.DataFrame, intervalo_s: int = 300) -> pd.DataFrame:
@@ -263,9 +306,18 @@ def diagnostico_estabilidad(df: pd.DataFrame) -> dict[str, object]:
         )
 
     if "diag.rssi" in df.columns:
-        r = df["diag.rssi"]
+        r = pd.to_numeric(df["diag.rssi"], errors="coerce")
+        centinela = r > RSSI_MAXIMO_FISICO
+        r = r.mask(centinela)
         out["rssi_mediana"] = float(r.median()) if r.notna().any() else None
+        out["rssi_min"] = float(r.min()) if r.notna().any() else None
+        out["rssi_centinela"] = int(centinela.sum())
+        # Sin red: RSSI ausente o centinela de "no asociado".
         out["intervalos_sin_red"] = int(r.isna().sum())
+
+    if {"son.clip", "son.n"} <= set(df.columns) and len(df):
+        sat = sonido_saturado(df)
+        out["sonido_saturado_pct"] = float(100.0 * sat.mean())
 
     if "temp_c.n" in df.columns:
         out["muestras_moda"] = int(df["temp_c.n"].mode().iloc[0])

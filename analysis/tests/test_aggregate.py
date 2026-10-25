@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from uestation.aggregate import (
     MINIMO_INTERVALOS_HORA,
@@ -192,3 +193,16 @@ class TestAgregacionDiaria:
         d = agregar_diario(agregar_horario(df))
         assert not d.empty
         assert abs(d.iloc[0]["temp_c_amplitud"] - 2.0) < 1e-6
+
+
+def test_sonido_saturado_no_entra_en_el_leq(df_nominal):
+    d = df_nominal.copy()
+    d["son.trazable"] = True
+    d["son.leq"] = 40.0
+    d["son.lmax"] = 50.0
+    d["son.qc_ok"] = True
+    # Un intervalo saturado con nivel anómalo en la primera hora.
+    d.loc[0, "son.leq"] = 90.0
+    d.loc[0, "son.qc_ok"] = False
+    h = agregar_horario(d)
+    assert h["son_leq"].iloc[0] == pytest.approx(40.0)

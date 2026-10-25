@@ -7,14 +7,17 @@ filtrado dejara de detectar un defecto, alguna de estas pruebas debe fallar.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from uestation.qc import (
+    FRACCION_MAXIMA_CLIP,
     MUESTRAS_MINIMAS_CLIMA,
     aplicar_qc,
     completitud,
     detectar_huecos,
     diagnostico_estabilidad,
+    sonido_saturado,
 )
 
 
@@ -122,3 +125,52 @@ class TestSerieVacia:
         limpio, r = aplicar_qc(vacio)
         assert limpio.empty
         assert r.n_entrada == 0
+
+
+class TestSonidoSaturado:
+    def _con_sonido(self, df, clip):
+        d = df.copy()
+        d["son.n"] = 2400
+        d["son.clip"] = clip
+        d["son.leq"] = 40.0
+        return d
+
+    def test_marca_sin_descartar(self, df_nominal):
+        clip = np.zeros(len(df_nominal), dtype=int)
+        clip[:10] = 2400   # saturación total
+        clip[10:20] = 5    # 0.2 %: tolerado
+        d = self._con_sonido(df_nominal, clip)
+        limpio, r = aplicar_qc(d)
+        assert len(limpio) == len(df_nominal)  # el clima no se pierde
+        assert r.marcas["son_saturado"] == 10
+        assert (~limpio["son.qc_ok"]).sum() == 10
+        assert "son_saturado" in r.a_markdown()
+
+    def test_umbral(self, df_nominal):
+        d = self._con_sonido(df_nominal, 0)
+        d.loc[0, "son.clip"] = int(2400 * FRACCION_MAXIMA_CLIP)      # en el umbral
+        d.loc[1, "son.clip"] = int(2400 * FRACCION_MAXIMA_CLIP) + 1  # lo excede
+        sat = sonido_saturado(d)
+        assert not sat.iloc[0] and sat.iloc[1]
+
+    def test_sin_bloques_es_saturado(self, df_nominal):
+        d = self._con_sonido(df_nominal, 0)
+        d.loc[0, "son.n"] = 0
+        assert sonido_saturado(d).iloc[0]
+
+    def test_sin_columnas_de_sonido_no_marca(self, df_nominal):
+        limpio, r = aplicar_qc(df_nominal)
+        assert "son.qc_ok" not in limpio.columns
+        assert r.marcas == {}
+
+
+class TestRssiCentinela:
+    def test_rssi_positivo_se_excluye(self, df_nominal):
+        d = df_nominal.copy()
+        d.loc[:4, "diag.rssi"] = 31.0
+        d.loc[5:9, "diag.rssi"] = np.nan
+        diag = diagnostico_estabilidad(d)
+        assert diag["rssi_centinela"] == 5
+        assert diag["intervalos_sin_red"] == 10
+        assert diag["rssi_mediana"] == -67.0
+        assert diag["rssi_min"] <= 0

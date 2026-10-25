@@ -193,3 +193,18 @@ class TestDiagnostico:
         d.loc[100:, "boot"] = 2
         f = fig_diagnostico_nodo(d)
         assert len(f.layout.shapes) >= 1
+
+
+def test_fig_acf_no_recorta_valores_negativos():
+    """El eje vertical debe contener el mínimo de la ACF, sea cual sea."""
+    from dashboard.figuras import fig_acf
+
+    rezagos = np.arange(0, 289)
+    acf = pd.DataFrame({
+        "rezago": rezagos,
+        "acf": np.cos(2 * np.pi * rezagos / 288) * np.exp(-rezagos / 400),
+        "banda": 0.03,
+    })
+    fig = fig_acf(acf, {"minutos": 135.0})
+    lo, hi = fig.layout.yaxis.range
+    assert lo < acf["acf"].min() and hi >= 1.0

@@ -18,12 +18,14 @@ from __future__ import annotations
 import base64
 import io
 import os
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-import requests
 from dotenv import load_dotenv
+
+from uestation.ingest import LIMITE_DEFECTO, SerieRecortadaWarning, descargar
 
 RAIZ = Path(__file__).resolve().parents[2]
 CACHE = Path(__file__).resolve().parent / "cache" / "ultimo.parquet"
@@ -36,43 +38,19 @@ DEVICE_ID = os.environ.get("UES_DEVICE_ID", "ues-b1c9fe")
 DB_URL = os.environ.get("FIREBASE_DB_URL", "")
 SECRETO = os.environ.get("FIREBASE_SECRET", "")
 
-ESQUEMA_SOPORTADO = 1
-
-# Equivale a unos 200 días de operación continua a 288 registros diarios.
-LIMITE_DEFECTO = 60_000
-
-
-def _normalizar(payload: dict) -> pd.DataFrame:
-    df = pd.json_normalize(list(payload.values()))
-    if df.empty:
-        return df
-    df["t_fin"] = pd.to_datetime(df["t_fin"], unit="s", utc=True)
-    return df.sort_values("t_fin").reset_index(drop=True)
-
 
 def leer_remoto(limite: int = LIMITE_DEFECTO, timeout: int = 60) -> pd.DataFrame:
     """Descarga los registros desde Firebase RTDB.
 
-    Emite una advertencia si el número recibido alcanza el límite solicitado,
-    señal de que la serie podría estar recortada.
+    Delega en `uestation.ingest.descargar`, único punto de acceso a la base.
+    Si la serie alcanza el límite solicitado, la advertencia se informa en
+    consola: la serie podría estar recortada.
     """
-    if not DB_URL or not SECRETO:
-        raise RuntimeError(
-            "Faltan FIREBASE_DB_URL o FIREBASE_SECRET. "
-            "Defínalas en analysis/.env o en el entorno."
-        )
-
-    r = requests.get(
-        f"{DB_URL}/estaciones/{DEVICE_ID}/datos.json",
-        params={"auth": SECRETO, "orderBy": '"$key"', "limitToLast": limite},
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    df = _normalizar(r.json() or {})
-
-    if len(df) >= limite:
-        print(f"[datos] ADVERTENCIA: se recibieron {len(df)} registros, igual al "
-              f"límite solicitado. La serie puede estar recortada; aumente el límite.")
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always", SerieRecortadaWarning)
+        df = descargar(DB_URL, DEVICE_ID, SECRETO, limite, timeout)
+    for aviso in avisos:
+        print(f"[datos] ADVERTENCIA: {aviso.message}")
     return df
 
 

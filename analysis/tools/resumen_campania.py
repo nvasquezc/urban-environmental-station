@@ -110,13 +110,20 @@ def main() -> None:
     seccion("CONTRASTE DE TENDENCIA")
     print(f"  Pendiente global     {contraste['pendiente_dia']:+.4f} °C/día")
     print(f"  Bloques              {contraste['bloques_pendientes']}")
-    print(f"  CV entre bloques     {contraste['cv_bloques']:.2f}")
+    cv = contraste["cv_bloques"]
+    print("  CV entre bloques     "
+          + (f"{cv:.2f}" if np.isfinite(cv) else "no aplica (pendiente bajo el umbral)"))
+    lo, hi = contraste["ic95_dia"]
+    print(f"  IC 95 %              [{lo:+.4f}, {hi:+.4f}] °C/día")
+    print(f"  Mín. detectable      {contraste['pendiente_minima_detectable']:.4f} °C/día "
+          "(α = 0.05, potencia 0.80)")
     print(f"  ρ (rezago 1)         {contraste['rho_lag1']:.4f}")
     print(f"  n efectivo           {contraste['n_efectivo']:.0f} "
           f"de {contraste['n_observaciones']}")
     print(f"  t = {contraste['razon_senal_ruido']:.2f} frente a "
           f"{contraste['t_critico']:.2f} crítico")
-    print(f"  Decisión             {contraste['recomendada']}")
+    print(f"  Decisión             {contraste['recomendada']}"
+          + ("" if contraste["concluyente"] else " · no concluyente"))
     print(f"      {contraste['motivo']}")
 
     # --- Escalas temporales ---
@@ -153,7 +160,11 @@ def main() -> None:
           "(recuperados por la cola persistente)")
     print(f"  Muestras · moda      {diag.get('muestras_moda', '—')}")
     print(f"  Muestras · mínimo    {diag.get('muestras_min', '—')}")
-    print(f"  RSSI mediana         {diag.get('rssi_mediana', 0):.0f} dBm")
+    print(f"  RSSI mediana         {diag.get('rssi_mediana', 0):.0f} dBm"
+          f"  ({diag.get('rssi_centinela', 0)} valores centinela excluidos)")
+    if "sonido_saturado_pct" in diag:
+        print(f"  Sonido saturado      {diag['sonido_saturado_pct']:.1f} % de intervalos "
+              "(marcados, no usados en agregados)")
 
     # --- Variabilidad diaria ---
     v = variabilidad_diaria(limpio)

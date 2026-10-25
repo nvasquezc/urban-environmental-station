@@ -5,6 +5,45 @@ Versionado según [SemVer](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Agregado
+- Contraste de tendencia: intervalo de confianza del 95 % y pendiente mínima
+  detectable (α = 0.05, potencia 0.80) con los grados de libertad efectivos. Si la
+  mínima detectable supera el umbral de relevancia, el resultado se declara no
+  concluyente en lugar de «sin deriva». La consola agrega el criterio de potencia.
+- Control de calidad por variable: `son.qc_ok` marca intervalos con más del 1 % de
+  bloques de sonido saturados sin descartar el registro; la agregación horaria los
+  excluye del Leq. `ResumenQC.marcas` los contabiliza.
+- Diagnóstico del nodo: RSSI mínimo, número de valores centinela y porcentaje de
+  intervalos con sonido saturado.
+- Bitácora: interrupciones del 15 al 23 de octubre (causa por confirmar).
+- Resultados de la campaña al 25 de octubre (39.6 días) en el README, el informe
+  `docs/07-resultados-campania.md` y las figuras. La ventaja del pronóstico con
+  persistencia frente al ciclo sin persistencia no se reproduce con el registro
+  ampliado; el README lo declara.
+
+### Corregido
+- El coeficiente de variación entre bloques se calculaba aun con pendiente global
+  próxima a cero, donde el cociente diverge (CV = 337 en la campaña actual). Solo se
+  calcula cuando la pendiente supera el umbral de relevancia.
+- El ESP8266 informa RSSI = +31 dBm sin asociación al punto de acceso. Ese valor
+  centinela entraba en la mediana; ahora se trata como intervalo sin red.
+- La gráfica de persistencia intradiaria fijaba el eje vertical en [−0.25, 1.05] y
+  recortaba el lóbulo negativo de la autocorrelación (mínimo −0.41 hacia 9 h de
+  rezago en la campaña actual). El límite inferior se ajusta ahora a los datos.
+- `ingest.py` conservaba el límite de 5000 registros: la corrección de 0.3.0 solo se
+  había aplicado en la consola, de modo que la ingesta a bronze seguía recortando en
+  silencio campañas de más de 17 días. El límite pasa a 60 000 y se emite
+  `SerieRecortadaWarning` cuando se alcanza.
+- La versión del paquete de análisis (`pyproject.toml`) quedó en 0.2.0; se alinea con
+  la versión publicada.
+
+### Cambiado
+- `uestation.ingest.descargar` es el único punto de acceso a Firebase. La consola
+  (`dashboard/datos.py`) delega en ella, por lo que límite de lectura y validación de
+  esquema ya no pueden divergir entre ambos caminos.
+- `ingest` toma el nodo de `UES_DEVICE_ID` y las credenciales de `analysis/.env` si no
+  se indican en la línea de comandos.
+
 ## [0.3.0] - 2026-10-07
 
 ### Agregado

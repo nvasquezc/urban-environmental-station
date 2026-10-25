@@ -239,7 +239,11 @@ def fig_acf(acf: pd.DataFrame, td: dict, intervalo_min: int = 5) -> go.Figure:
     fig.update_layout(showlegend=False, margin=BASE["margin"], **_sin_margen(232))
     _ejes(fig)
     fig.update_xaxes(title_text="rezago (min)", title_font_size=10)
-    fig.update_yaxes(range=[-0.25, 1.05])
+    # El rango inferior se ajusta a los datos: la componente intradiaria filtrada
+    # a 24 h presenta autocorrelación negativa marcada entre 6 y 12 h de rezago,
+    # que un rango fijo recortaría.
+    piso = float(np.nanmin(np.append(y, -banda)))
+    fig.update_yaxes(range=[min(-0.25, piso - 0.08), 1.05])
     return fig
 
 

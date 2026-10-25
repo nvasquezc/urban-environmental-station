@@ -259,3 +259,54 @@ class TestIncertidumbre:
 
     def test_devuelve_vacio_sin_columnas(self):
         assert incertidumbre_expandida(pd.DataFrame({"a": [1]})) == {}
+
+
+class TestPotenciaDelContraste:
+    """La ausencia de deriva detectada solo es informativa con potencia suficiente."""
+
+    @staticmethod
+    def _serie_persistente(dias=4, rho=0.998, sigma=0.08, semilla=3):
+        """Ciclo diurno con ruido AR(1) muy persistente, sin deriva real."""
+        df = _serie(dias=dias, ruido=0.0, pendiente=0.0, semilla=semilla)
+        rng = np.random.default_rng(semilla)
+        e = np.zeros(len(df))
+        for i in range(1, len(df)):
+            e[i] = rho * e[i - 1] + rng.normal(0, sigma)
+        df["temp_c.prom"] += e
+        return df
+
+    def test_ruido_blanco_es_concluyente(self, serie_ciclica):
+        r = detectar_tendencia(serie_ciclica)
+        assert not r["recomendada"]
+        assert r["potencia_suficiente"]
+        assert r["concluyente"]
+        assert r["pendiente_minima_detectable"] < 0.10
+        assert "se excluyen derivas" in r["motivo"]
+
+    def test_ruido_persistente_no_es_concluyente(self):
+        r = detectar_tendencia(self._serie_persistente())
+        assert not r["recomendada"]
+        assert r["n_efectivo"] < 30
+        assert not r["potencia_suficiente"]
+        assert not r["concluyente"]
+        assert "no concluyente" in r["motivo"]
+        assert "mínima detectable" in r["motivo"]
+
+    def test_ic95_contiene_la_pendiente(self, serie_con_deriva):
+        r = detectar_tendencia(serie_con_deriva)
+        lo, hi = r["ic95_dia"]
+        assert lo < r["pendiente_dia"] < hi
+        # Intervalo estrecho con ruido blanco: la potencia es holgada.
+        assert hi - lo < 0.05
+        assert abs(r["pendiente_dia"] - 0.35) < 0.02
+
+    def test_cv_no_aplica_bajo_el_umbral(self, serie_ciclica):
+        # Con pendiente global ~0 el cociente diverge: no se reporta.
+        r = detectar_tendencia(serie_ciclica)
+        assert not r["supera_umbral"]
+        assert np.isnan(r["cv_bloques"])
+
+    def test_deriva_real_sigue_confirmandose(self, serie_con_deriva):
+        r = detectar_tendencia(serie_con_deriva)
+        assert r["recomendada"] and r["concluyente"]
+        assert np.isfinite(r["cv_bloques"])

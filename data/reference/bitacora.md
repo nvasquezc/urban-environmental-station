@@ -17,6 +17,10 @@ hora local.
 | 2026-10-06 | 08:30 – 09:50 | ues-b1c9fe | Interrupción, 15 intervalos | Corte del suministro eléctrico comercial | NVC |
 | 2026-10-06 | 10:05 – 10:25 | ues-b1c9fe | Interrupciones breves, 2 intervalos | Corte del suministro eléctrico comercial | NVC |
 | 2026-10-06 | 19:00 – 19:15 | ues-b1c9fe | Interrupción, 2 intervalos | No registrada | NVC |
+| 2026-10-15 | 23:15 – 05:00 (+2 d) | ues-b1c9fe | Interrupción, 356 intervalos; arranque al recuperar | Por confirmar | NVC |
+| 2026-10-19 | 20:55 – 21:40 | ues-b1c9fe | Interrupciones breves, 3 intervalos | Por confirmar | NVC |
+| 2026-10-22 | 06:40 – 07:00 | ues-b1c9fe | Interrupción, 3 intervalos; arranque al recuperar | Por confirmar | NVC |
+| 2026-10-23 | 02:05 – 03:50 | ues-b1c9fe | Interrupción, 20 intervalos, sin arranque | Por confirmar | NVC |
 
 ## Observaciones
 

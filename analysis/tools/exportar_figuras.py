@@ -189,6 +189,8 @@ def _informe(c: dict) -> str:
         f"{d.get('reinicios_espontaneos', '—')} espontáneos |",
         f"| Intervalos recuperados por la cola persistente | "
         f"{d.get('intervalos_sin_red', '—')} |",
+        f"| Intervalos con sonido saturado (marcados) | "
+        f"{_num(d.get('sonido_saturado_pct'), '.1f')} % |",
         f"| Memoria libre mínima | {_num(d.get('heap_min'), '.0f')} B · deriva "
         f"{_num(d.get('heap_pendiente_bytes_hora'), '+.1f')} B/h |",
         "",
@@ -204,6 +206,10 @@ def _informe(c: dict) -> str:
         f"| Pendiente global | {r['pendiente_dia']:+.4f} °C/día |",
         f"| Tendencia incorporada | {'sí' if r['recomendada'] else 'no'} — "
         f"{r['motivo']} |",
+        f"| IC 95 % de la pendiente | [{r['ic95_dia'][0]:+.4f}, "
+        f"{r['ic95_dia'][1]:+.4f}] °C/día |",
+        f"| Pendiente mínima detectable (α = 0.05, potencia 0.80) | "
+        f"{r['pendiente_minima_detectable']:.4f} °C/día |",
         f"| Autocorrelación de primer orden | {r['rho_lag1']:.4f} |",
         f"| Tamaño efectivo de muestra | {r['n_efectivo']:.0f} de "
         f"{r['n_observaciones']} |",

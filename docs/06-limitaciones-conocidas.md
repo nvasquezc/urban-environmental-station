@@ -14,8 +14,15 @@ concesión.
    y no tiene sensibilidad declarada por el fabricante.
 3. **Constante K sin determinar.** El valor por defecto (40.0 dB) es arbitrario
    y no corresponde a ninguna calibración.
-4. **Rango dinámico desconocido.** El campo `son.clip` cuenta bloques saturados;
-   un valor no nulo indica que el rango útil fue excedido.
+4. **Rango dinámico estrecho, medido en campo.** El campo `son.clip` cuenta
+   bloques saturados. En la campaña de septiembre y octubre de 2026 el 91 % de
+   los intervalos contiene al menos un bloque saturado y el 22 % supera el 1 %
+   de bloques saturados; a la vez, la mediana del nivel (35.7) queda a menos de
+   2 dB del mínimo registrado y el ciclo día-noche abarca unos 4 dB. El canal
+   está acotado por el piso de ruido y por la saturación: su variación no
+   representa la del ruido ambiental. El control de calidad marca como
+   `son.qc_ok = False` los intervalos con más del 1 % de bloques saturados y
+   la agregación los excluye.
 5. **Ponderación A del frontend I2S verificada hasta 4 kHz.** Con fs = 16 kHz la
    desviación a 4 kHz es de −0.49 dB respecto al valor nominal (dentro de
    tolerancia clase 1). Por encima de esa frecuencia el warping bilineal degrada

@@ -38,51 +38,67 @@ Las mediciones de nivel sonoro usan un transductor sin ponderación frecuencial 
 sensibilidad declarada, y no deben usarse con fines normativos ni legales.
 Ver [limitaciones conocidas](docs/06-limitaciones-conocidas.md).
 
-## Resultados de la primera campaña
+## Resultados de la campaña
 
-**15 de septiembre a 6 de octubre de 2026 · 21.2 días · nodo `ues-b1c9fe`**
+**15 de septiembre a 25 de octubre de 2026 · 39.6 días · nodo `ues-b1c9fe`**
 
 | Indicador | Valor |
 |---|---|
-| Registros válidos | 5742 de 5757 (99.7 %) |
-| Completitud | 94.0 % |
-| Reinicios espontáneos | 0 de 8 arranques |
-| Intervalos recuperados por la cola persistente | 464 |
-| Registro perdido por cortes del suministro eléctrico | 28 h (4 y 5 de octubre) |
+| Registros válidos | 10 672 de 10 712 (99.6 %) |
+| Completitud | 93.5 % |
+| Reinicios espontáneos | 0 de 10 arranques |
+| Intervalos recuperados por la cola persistente | 766 |
+| Registro perdido | 63.5 h en 14 interrupciones; las dos mayores, de 28 h (4 y 5 de octubre, corte eléctrico) y 29.8 h (15 a 17 de octubre) |
 
 ![Descomposición de la señal](docs/figuras/01-descomposicion.png)
 
 **El tiempo de decorrelación depende de la escala que se mida.** Sobre el residual
-completo del ciclo diurno resulta de 1500 min, pero varía entre 340 y 1570 min según
-el tramo analizado (CV = 0.77): describe el período, no el proceso. Separada la
-componente intradiaria mediante un filtro pasa altos de 24 h, el valor es de 145 min
-y se mantiene estable entre particiones del registro (CV de 0.07 a 0.15). Solo este
-último es una propiedad del proceso, y justifica ampliar la cadencia de transmisión
-de 5 a 50 minutos sin perder dinámica intradiaria.
+completo del ciclo diurno resulta de 735 min, pero varía entre 460 y 1530 min según
+el tramo analizado (CV de 0.60 a 0.75): describe el período, no el proceso. Separada
+la componente intradiaria mediante un filtro pasa altos de 24 h, el valor es de
+140 min y se mantiene estable entre particiones del registro (CV de 0.13 a 0.14).
+El resultado reproduce el de los primeros 21 días (145 min, CV de 0.07 a 0.15) con
+casi el doble de registro. Solo este último es una propiedad del proceso, y justifica
+ampliar la cadencia de transmisión de 5 a 45 minutos sin perder dinámica intradiaria.
 
 ![Persistencia intradiaria](docs/figuras/02-persistencia-intradiaria.png)
 
-**La autocorrelación reduce el tamaño efectivo de muestra de 5742 a 29.** Con una
+**La autocorrelación reduce el tamaño efectivo de muestra de 10 672 a 54.** Con una
 autocorrelación de primer orden de 0.998, tratar las observaciones como
 independientes sobreestima la significancia estadística en más de un orden de
 magnitud.
 
-**El contraste de tendencia rechazó un falso positivo.** A los nueve días, el ajuste
-global detectó una deriva de +0.27 °C/día, significativa incluso tras corregir por
-autocorrelación. El contraste por bloques la rechazó por heterogeneidad (CV = 1.93).
-Con 21 días, la pendiente estimada cayó a +0.05 °C/día.
+**La serie no presenta tendencia, y el contraste tiene potencia para afirmarlo.** La
+pendiente global es de −0.0005 °C/día, con intervalo de confianza del 95 % de
+[−0.026, +0.025] °C/día. La pendiente mínima detectable (α = 0.05, potencia 0.80, con
+54 observaciones efectivas) es de 0.036 °C/día, inferior al umbral de relevancia de
+0.1 °C/día: se excluyen derivas mayores en la serie medida. Sin una referencia, esta
+ausencia de tendencia no separa la deriva del sensor de la evolución del clima.
 
-**El 64 % de la varianza residual corresponde a regímenes de varios días**, con una
-correlación de 0.55 entre medias diarias consecutivas.
+**El contraste por bloques ya había rechazado un falso positivo.** A los nueve días,
+el ajuste global detectó una deriva de +0.27 °C/día, significativa incluso tras
+corregir por autocorrelación, que el criterio de homogeneidad rechazó (CV = 1.93).
+Con 39.6 días, la pendiente es indistinguible de cero.
 
-**La persistencia de régimen aporta capacidad predictiva.** En validación de origen
-móvil sobre cinco ventanas de 24 h, el pronóstico alcanza una destreza de +0.36
-frente a la climatología y de +0.09 frente al ciclo diurno sin persistencia. La banda
-de predicción cubre el 78 % de las observaciones frente al 95 % nominal y subestima
-por tanto la incertidumbre. El contraste frente a la persistencia ingenua está
-pendiente.
+**El 59 % de la varianza residual corresponde a regímenes de varios días**, con una
+correlación de 0.46 entre medias diarias consecutivas (0.55 y 64 % a los 21 días).
+
+**La ventaja de la persistencia de régimen no se sostuvo.** En validación de origen
+móvil sobre las cinco últimas ventanas de 24 h, el pronóstico mantiene destreza
+frente a la climatología (+0.56), pero queda por debajo del ciclo diurno sin
+persistencia (−0.23), cuando a los 21 días lo superaba (+0.09). Con cinco ventanas,
+ninguno de los dos signos es concluyente. La banda de predicción cubre el 95.5 % de
+las observaciones frente al 95 % nominal. El contraste frente a la persistencia
+ingenua sigue pendiente.
 
 ![Pronóstico](docs/figuras/03-pronostico.png)
+
+**El canal de sonido analógico no es informativo.** El 91 % de los intervalos
+contiene algún bloque saturado y, a la vez, la mediana del nivel queda a menos de
+2 dB del mínimo registrado, con un ciclo día-noche de unos 4 dB. El canal está
+acotado por el piso de ruido y por la saturación. El control de calidad marca el
+22 % de los intervalos (más del 1 % de bloques saturados) y los excluye de la
+agregación. Ver [limitaciones conocidas](docs/06-limitaciones-conocidas.md).
 
 Informe completo, con todas las figuras y cifras generadas desde los datos:
 [resultados de la campaña](docs/07-resultados-campania.md).
